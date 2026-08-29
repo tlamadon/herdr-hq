@@ -1,0 +1,6 @@
+.git
+.github
+config.json
+*.md
+__pycache__/
+*.pyc

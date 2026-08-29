@@ -1,0 +1,839 @@
+/* herdr HQ dashboard */
+
+const STATUS_ORDER = ['working', 'blocked', 'idle', 'done', 'unknown'];
+const STATUS_LABEL = {
+  working: 'working',
+  blocked: 'blocked',
+  idle: 'idle',
+  done: 'done',
+  unknown: 'unknown',
+};
+// icon + label, so status never rides on colour alone
+const STATUS_ICON = { working: '▶', blocked: '!', done: '✓', idle: '○', unknown: '?' };
+
+const ui = {
+  liveState: document.getElementById('liveState'),
+  liveLabel: document.getElementById('liveLabel'),
+  refreshSelect: document.getElementById('refreshSelect'),
+  refreshNow: document.getElementById('refreshNow'),
+  themeToggle: document.getElementById('themeToggle'),
+  heroAgents: document.getElementById('heroAgents'),
+  heroLabel: document.getElementById('heroLabel'),
+  tiles: document.getElementById('tiles'),
+  hostGrid: document.getElementById('hostGrid'),
+  machinesNote: document.getElementById('machinesNote'),
+  projectGrid: document.getElementById('projectGrid'),
+  projectsNote: document.getElementById('projectsNote'),
+  agentsView: document.getElementById('agentsView'),
+  search: document.getElementById('search'),
+  statusChips: document.getElementById('statusChips'),
+  sortSelect: document.getElementById('sortSelect'),
+  legend: document.getElementById('legend'),
+};
+
+const view = {
+  latest: null,
+  mode: 'cards',
+  query: '',
+  statuses: new Set(),
+  sort: 'status',
+  openPanes: new Set(),
+  timer: null,
+  interval: 5000,
+};
+
+/* ------------------------------------------------------------- helpers */
+
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v === null || v === undefined) continue;
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of [].concat(children)) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child);
+  }
+  return node;
+}
+
+function bytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+}
+
+function pct(n) {
+  return `${(n ?? 0).toFixed(n >= 10 ? 0 : 1)}%`;
+}
+
+function duration(seconds) {
+  if (seconds === null || seconds === undefined) return '–';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function ago(ts) {
+  if (!ts) return 'never';
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
+/** Keep the tail of a path (the part that identifies the project) readable. */
+function shortPath(path, keep = 3) {
+  if (!path) return '';
+  const parts = path.split('/').filter(Boolean);
+  const tail = parts.slice(-keep).join('/');
+  return parts.length > keep ? `…/${tail}` : path;
+}
+
+/* Git presentation. Ahead/behind come from the local remote-tracking ref — the
+   collector never fetches, so "behind" is as of that repo's last fetch. */
+
+function branchName(g) {
+  if (!g) return '';
+  if (g.detached) return 'detached';
+  return g.branch || '(no branch)';
+}
+
+function dirtyText(g) {
+  if (!g || !g.dirty) return 'clean';
+  const bits = [];
+  if (g.conflicts) bits.push(`${g.conflicts} conflicted`);
+  if (g.staged) bits.push(`${g.staged} staged`);
+  if (g.unstaged) bits.push(`${g.unstaged} modified`);
+  if (g.untracked) bits.push(`${g.untracked} untracked`);
+  return bits.join(' · ');
+}
+
+function dirtyCount(g) {
+  if (!g) return 0;
+  return (g.staged || 0) + (g.unstaged || 0) + (g.untracked || 0) + (g.conflicts || 0);
+}
+
+/** One compact line: repo · branch · worktree · ahead/behind · dirty. */
+function gitLine(g) {
+  if (!g) return null;
+  const parts = [
+    el('span', { class: 'git-repo', text: g.repo_name, title: g.repo }),
+    el('span', { class: 'git-sep', text: '·' }),
+    el('span', { class: 'git-branch', text: branchName(g), title: g.upstream || 'no upstream' }),
+  ];
+  if (g.worktree) {
+    // the name is nearly always a slug of the branch, so the tag just flags the kind
+    parts.push(el('span', { class: 'git-tag', text: 'worktree', title: `linked worktree at ${g.toplevel}` }));
+  }
+  if (g.ahead) parts.push(el('span', { class: 'git-ahead', text: `↑${g.ahead}` , title: `${g.ahead} commit(s) ahead of ${g.upstream}` }));
+  if (g.behind) parts.push(el('span', { class: 'git-behind', text: `↓${g.behind}`, title: `${g.behind} commit(s) behind ${g.upstream}` }));
+  if (!g.detached && !g.upstream) parts.push(el('span', { class: 'git-muted', text: 'no upstream' }));
+  parts.push(el('span', {
+    class: g.dirty ? 'git-dirty' : 'git-muted',
+    text: g.dirty ? `● ${dirtyCount(g)} changed` : 'clean',
+    title: dirtyText(g),
+  }));
+  return el('div', { class: 'git-line' }, parts);
+}
+
+/* Listening ports. A port is only clickable when the dashboard can actually reach
+   it: anything on this machine, or a remote port bound beyond loopback. */
+
+function hostAddress(host) {
+  if (!host || host.transport === 'local') return '127.0.0.1';
+  return String(host.target || host.name).split('@').pop();
+}
+
+function portHref(sock, host) {
+  if (!host) return null;
+  if (host.transport === 'local') return `http://127.0.0.1:${sock.port}/`;
+  if (sock.scope === 'loopback') return null;
+  return `http://${hostAddress(host)}:${sock.port}/`;
+}
+
+function portChip(sock, host) {
+  const where = `${sock.addr}:${sock.port}`;
+  const href = portHref(sock, host);
+  const tip = href
+    ? `${sock.process} · ${where} · pid ${sock.pid}`
+    : `${sock.process} · ${where} · pid ${sock.pid} — loopback only on ${host?.name ?? 'that machine'}.\n`
+      + `Reach it with: ssh -L ${sock.port}:localhost:${sock.port} ${host?.target || host?.name || '<host>'}`;
+  const props = { class: `port-chip${href ? ' is-open' : ''}`, title: tip, text: `:${sock.port}` };
+  if (!href) return el('span', props);
+  return el('a', { ...props, href, target: '_blank', rel: 'noopener' });
+}
+
+function portsLine(ports, host, label = 'Listening') {
+  if (!ports || !ports.length) return null;
+  return el('div', { class: 'ports-line' }, [
+    el('span', { class: 'ports-label', text: label }),
+    // project rollups mix machines, so each socket may carry its own host
+    ...ports.map((s) => portChip(s, s.hostMeta || host)),
+  ]);
+}
+
+function severity(p) {
+  if (p >= 90) return 'critical';
+  if (p >= 75) return 'warning';
+  return 'normal';
+}
+
+const SVG = 'http://www.w3.org/2000/svg';
+
+function svgEl(tag, attrs) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+/** Sparkline: recessive line, current value in the accent, optional area fill. */
+function sparkline(values, { w = 72, h = 20, area = false, floor = 5 } = {}) {
+  const svg = svgEl('svg', {
+    class: area ? 'spark spark-wide' : 'spark',
+    width: w, height: h, viewBox: `0 0 ${w} ${h}`,
+    // wide sparklines stretch to the card; non-scaling strokes keep them 2px
+    preserveAspectRatio: area ? 'none' : 'xMidYMid meet',
+    role: 'img', 'aria-hidden': 'true',
+  });
+  const data = (values || []).slice(-40);
+  if (data.length < 2) return svg;
+  const max = Math.max(floor, ...data);
+  const pad = 2;
+  const x = (i) => (i / (data.length - 1)) * (w - pad * 2) + pad;
+  const y = (v) => h - pad - (v / max) * (h - pad * 2);
+  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+
+  if (area) {
+    svg.append(svgEl('path', {
+      d: `M${pad},${h} L${pts.join(' L')} L${(w - pad).toFixed(1)},${h} Z`,
+      fill: 'var(--accent)', 'fill-opacity': '0.12', stroke: 'none',
+    }));
+  }
+  svg.append(svgEl('polyline', {
+    points: pts.join(' '), fill: 'none', stroke: 'var(--baseline)',
+    'stroke-width': '2', 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+    'vector-effect': 'non-scaling-stroke',
+  }));
+  svg.append(svgEl('polyline', {
+    points: pts.slice(-2).join(' '), fill: 'none', stroke: 'var(--accent)',
+    'stroke-width': '2', 'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke',
+  }));
+  if (!area) {
+    // a circle would smear under the stretched aspect ratio of a wide spark
+    svg.append(svgEl('circle', {
+      cx: x(data.length - 1).toFixed(1), cy: y(data[data.length - 1]).toFixed(1),
+      r: '2', fill: 'var(--accent)',
+    }));
+  }
+  return svg;
+}
+
+function meterRow(label, value, text) {
+  const fill = el('div', { class: 'meter-fill' });
+  fill.style.width = `${Math.min(100, Math.max(0, value))}%`;
+  const sev = severity(value);
+  if (sev !== 'normal') fill.dataset.sev = sev;
+  return el('div', { class: 'meter-row' }, [
+    el('span', { class: 'meter-label', text: label }),
+    el('div', { class: 'meter', role: 'img', 'aria-label': `${label} ${pct(value)}` }, [fill]),
+    el('span', { class: 'meter-value', text }),
+  ]);
+}
+
+/* ---------------------------------------------------------- data shaping */
+
+/** Flatten every host's agent panes into one list with host context attached. */
+function collectAgents(state) {
+  const rows = [];
+  for (const host of state.hosts) {
+    const data = host.data;
+    if (!data) continue;
+    const wsLabel = {};
+    for (const ws of data.workspaces || []) wsLabel[ws.workspace_id] = ws.label || ws.workspace_id;
+    for (const pane of data.panes || []) {
+      if (!pane.is_agent) continue;
+      rows.push({
+        host: host.name,
+        hostMeta: host,
+        key: `${host.name}/${pane.pane_id}`,
+        workspace: wsLabel[pane.workspace_id] || pane.workspace_id,
+        history: (host.agent_history || {})[pane.pane_id] || [],
+        status: pane.agent_status || 'unknown',
+        ...pane,
+      });
+    }
+  }
+  return rows;
+}
+
+/** Roll agents up by repository. A project spans machines; a checkout doesn't. */
+function collectProjects(agents) {
+  const projects = new Map();
+  for (const row of agents) {
+    const g = row.git;
+    const key = g ? g.repo_name : ' no-repo';
+    let p = projects.get(key);
+    if (!p) {
+      p = {
+        key,
+        name: g ? g.repo_name : 'Outside a repository',
+        hasGit: !!g,
+        agents: [],
+        hosts: new Set(),
+        checkouts: new Map(),
+        ports: new Map(),
+        counts: {},
+        cpu: 0,
+        rss: 0,
+      };
+      projects.set(key, p);
+    }
+    p.agents.push(row);
+    p.hosts.add(row.host);
+    p.counts[row.status] = (p.counts[row.status] || 0) + 1;
+    p.cpu += row.usage?.cpu_pct || 0;
+    p.rss += row.usage?.rss || 0;
+    for (const sock of row.ports || []) {
+      p.ports.set(`${row.host}|${sock.addr}:${sock.port}`, { ...sock, hostMeta: row.hostMeta });
+    }
+    if (g) {
+      // the main checkout and each linked worktree are separate working copies
+      const ck = `${row.host}|${g.toplevel}`;
+      const existing = p.checkouts.get(ck);
+      if (existing) existing.agents += 1;
+      else p.checkouts.set(ck, { host: row.host, git: g, agents: 1 });
+    }
+  }
+  return [...projects.values()].sort((a, b) => {
+    if (a.hasGit !== b.hasGit) return a.hasGit ? -1 : 1;
+    return b.agents.length - a.agents.length || b.cpu - a.cpu;
+  });
+}
+
+function matches(row) {
+  if (view.statuses.size && !view.statuses.has(row.status)) return false;
+  if (!view.query) return true;
+  const g = row.git;
+  const hay = [row.title, row.cwd, row.host, row.workspace, row.agent, row.pane_id,
+               g?.repo_name, g?.branch, g?.worktree_name, g?.upstream]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(view.query);
+}
+
+function sortRows(rows) {
+  const byStatus = (r) => {
+    const i = STATUS_ORDER.indexOf(r.status);
+    return i < 0 ? STATUS_ORDER.length : i;
+  };
+  const cpu = (r) => r.usage?.cpu_pct || 0;
+  const mem = (r) => r.usage?.rss || 0;
+  const cmp = {
+    status: (a, b) => byStatus(a) - byStatus(b) || cpu(b) - cpu(a),
+    cpu: (a, b) => cpu(b) - cpu(a),
+    mem: (a, b) => mem(b) - mem(a),
+    title: (a, b) => (a.title || '').localeCompare(b.title || ''),
+  }[view.sort];
+  return rows.slice().sort(cmp);
+}
+
+/* -------------------------------------------------------------- rendering */
+
+function renderSummary(state, agents) {
+  const online = state.hosts.filter((h) => h.status === 'ok').length;
+  const counts = Object.fromEntries(STATUS_ORDER.map((s) => [s, 0]));
+  let cpu = 0;
+  let rss = 0;
+  for (const a of agents) {
+    counts[a.status] = (counts[a.status] || 0) + 1;
+    cpu += a.usage?.cpu_pct || 0;
+    rss += a.usage?.rss || 0;
+  }
+
+  ui.heroAgents.textContent = agents.length;
+  ui.heroLabel.textContent = `agents on ${online} of ${state.hosts.length} machine${state.hosts.length === 1 ? '' : 's'}`;
+
+  const tiles = [
+    { label: 'Working', status: 'working', value: counts.working, sub: 'actively running' },
+    { label: 'Blocked', status: 'blocked', value: counts.blocked, sub: 'waiting on you' },
+    { label: 'Idle', status: 'idle', value: counts.idle + counts.done, sub: 'ready or finished' },
+    { label: 'Agent CPU', value: (cpu / 100).toFixed(1), sub: 'cores across the fleet' },
+    { label: 'Agent memory', value: bytes(rss).split(' ')[0], sub: `${bytes(rss).split(' ')[1]} resident` },
+  ];
+
+  ui.tiles.replaceChildren(...tiles.map((t) => el('div', { class: 'tile' }, [
+    el('div', { class: 'tile-label' }, [
+      t.status ? el('span', { class: 'dot', 'data-status': t.status }) : null,
+      el('span', { text: t.label }),
+    ]),
+    el('div', { class: 'tile-value', text: String(t.value) }),
+    el('div', { class: 'tile-sub', text: t.sub }),
+  ])));
+}
+
+function renderHosts(state) {
+  const cards = state.hosts.map((host) => {
+    const data = host.data;
+    const m = data?.machine || {};
+    const agentCount = (data?.panes || []).filter((p) => p.is_agent).length;
+    const badges = [
+      el('span', { class: 'badge', text: host.transport === 'local' ? 'local' : `ssh ${host.target}` }),
+      data?.herdr?.version ? el('span', { class: 'badge', text: `herdr ${data.herdr.version}` }) : null,
+      el('span', {
+        class: `badge ${host.status === 'ok' ? 'is-good' : 'is-bad'}`,
+        text: host.status === 'ok' ? 'online' : 'unreachable',
+      }),
+    ];
+
+    const body = [];
+    if (host.status === 'error') {
+      body.push(el('div', { class: 'host-error', text: host.error || 'unknown error' }));
+    }
+    if (data) {
+      body.push(el('div', { class: 'meters' }, [
+        meterRow('CPU', m.cpu_pct, `${pct(m.cpu_pct)} of ${m.cpu_count} cores`),
+        meterRow('RAM', m.mem_pct, `${bytes(m.mem_used)} / ${bytes(m.mem_total)}`),
+        m.disk_total ? meterRow('Disk', (m.disk_used / m.disk_total) * 100,
+          `${bytes(m.disk_used)} / ${bytes(m.disk_total)}`) : null,
+      ].filter(Boolean)));
+
+      body.push(sparkline(host.history?.cpu, { w: 268, h: 30, area: true, floor: 10 }));
+
+      body.push(el('div', { class: 'host-stats' }, [
+        el('div', {}, [
+          el('div', { class: 'host-stat-label', text: 'Load' }),
+          el('div', { class: 'host-stat-value', text: `${m.load1 ?? '–'}` }),
+        ]),
+        el('div', {}, [
+          el('div', { class: 'host-stat-label', text: 'Uptime' }),
+          el('div', { class: 'host-stat-value', text: duration(m.uptime_s) }),
+        ]),
+        el('div', {}, [
+          el('div', { class: 'host-stat-label', text: 'Agents' }),
+          el('div', { class: 'host-stat-value', text: String(agentCount) }),
+        ]),
+      ]));
+
+      // every listening port under a herdr pane, agent or not
+      const seen = new Set();
+      const allPorts = [];
+      for (const pane of data.panes || []) {
+        for (const sock of pane.ports || []) {
+          const key = `${sock.addr}:${sock.port}`;
+          if (!seen.has(key)) { seen.add(key); allPorts.push(sock); }
+        }
+      }
+      body.push(portsLine(allPorts, host, 'Pane ports'));
+    }
+
+    const sub = data
+      ? `${m.os} ${m.os_release} · ${m.arch} · ${m.proc_count} procs · polled ${ago(host.last_ok)} in ${host.latency_ms} ms`
+      : host.status === 'error'
+        ? `never polled successfully · last tried ${ago(host.last_try)}`
+        : 'waiting for first poll…';
+
+    return el('div', { class: `host-card${host.status === 'error' ? ' is-error' : ''}` }, [
+      el('div', { class: 'host-head' }, [
+        el('span', { class: 'host-name', text: host.name }),
+        el('span', { class: 'host-badges' }, badges.filter(Boolean)),
+      ]),
+      el('div', { class: 'host-sub', text: sub }),
+      ...body,
+    ]);
+  });
+  ui.hostGrid.replaceChildren(...cards);
+
+  const errs = state.hosts.filter((h) => h.status === 'error');
+  ui.machinesNote.textContent = errs.length
+    ? `${errs.length} unreachable`
+    : `all ${state.hosts.length} reachable`;
+}
+
+function statusRow(counts) {
+  const present = STATUS_ORDER.filter((s) => counts[s]);
+  return el('div', { class: 'status-row' }, present.map((s) => el('span', { class: 'status-item' }, [
+    el('span', { class: `dot${s === 'working' ? ' is-live' : ''}`, 'data-status': s }),
+    el('span', { text: `${counts[s]} ${STATUS_LABEL[s]}` }),
+  ])));
+}
+
+function checkoutRow(c, showHost) {
+  const g = c.git;
+  return el('div', { class: 'checkout-row' }, [
+    el('span', { class: 'git-branch', text: branchName(g), title: g.toplevel }),
+    g.worktree ? el('span', { class: 'git-tag', text: 'worktree', title: `linked worktree at ${g.toplevel}` }) : null,
+    showHost ? el('span', { class: 'badge', text: c.host }) : null,
+    el('span', { class: 'checkout-spacer' }),
+    g.ahead ? el('span', { class: 'git-ahead', text: `↑${g.ahead}` }) : null,
+    g.behind ? el('span', { class: 'git-behind', text: `↓${g.behind}` }) : null,
+    el('span', {
+      class: g.dirty ? 'git-dirty' : 'git-muted',
+      text: g.dirty ? `● ${dirtyCount(g)}` : 'clean',
+      title: dirtyText(g),
+    }),
+    el('span', { class: 'checkout-agents', text: `${c.agents} ${c.agents === 1 ? 'agent' : 'agents'}` }),
+  ].filter(Boolean));
+}
+
+function projectCard(p) {
+  const multiHost = p.hosts.size > 1;
+  const checkouts = [...p.checkouts.values()]
+    .sort((a, b) => b.agents - a.agents || branchName(a.git).localeCompare(branchName(b.git)));
+  const dirtyCheckouts = checkouts.filter((c) => c.git.dirty).length;
+  const unpushed = checkouts.reduce((s, c) => s + (c.git.ahead || 0), 0);
+
+  const summary = [`${p.agents.length} agent${p.agents.length === 1 ? '' : 's'}`];
+  if (p.hasGit) {
+    summary.push(`${checkouts.length} checkout${checkouts.length === 1 ? '' : 's'}`);
+  }
+  summary.push(`${pct(p.cpu)} cpu`, bytes(p.rss));
+
+  const flags = [];
+  if (unpushed) flags.push(el('span', { class: 'badge', text: `↑${unpushed} unpushed` }));
+  if (dirtyCheckouts) {
+    flags.push(el('span', {
+      class: 'badge',
+      text: `${dirtyCheckouts} dirty`,
+      title: `${dirtyCheckouts} of ${checkouts.length} checkouts have uncommitted changes`,
+    }));
+  }
+
+  return el('div', { class: 'host-card project-card' }, [
+    el('div', { class: 'host-head' }, [
+      el('button', {
+        class: 'project-name',
+        type: 'button',
+        title: 'Filter the agent list to this project',
+        onclick: () => {
+          view.query = p.hasGit ? p.name.toLowerCase() : '';
+          ui.search.value = p.hasGit ? p.name : '';
+          render();
+          document.getElementById('agents-h')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+        text: p.name,
+      }),
+      el('span', { class: 'host-badges' }, [
+        ...flags,
+        multiHost
+          ? el('span', { class: 'badge', text: `${p.hosts.size} machines`, title: [...p.hosts].join(', ') })
+          : el('span', { class: 'badge', text: [...p.hosts][0] }),
+      ]),
+    ]),
+    el('div', { class: 'host-sub', text: summary.join(' · ') }),
+    statusRow(p.counts),
+    checkouts.length
+      ? el('div', { class: 'checkouts' }, checkouts.map((c) => checkoutRow(c, multiHost)))
+      : null,
+    p.ports.size
+      ? portsLine([...p.ports.values()], null, 'Listening')
+      : null,
+  ].filter(Boolean));
+}
+
+function renderProjects(agents) {
+  const projects = collectProjects(agents);
+  ui.projectGrid.replaceChildren(...projects.map(projectCard));
+  const repos = projects.filter((p) => p.hasGit).length;
+  ui.projectsNote.textContent = repos
+    ? `${repos} ${repos === 1 ? 'repository' : 'repositories'} in play`
+    : 'no repositories detected';
+}
+
+function statusPill(status) {
+  return el('span', { class: 'status-pill', 'data-status': status }, [
+    el('span', { class: `dot${status === 'working' ? ' is-live' : ''}`, 'data-status': status }),
+    el('span', { text: `${STATUS_ICON[status] || ''} ${STATUS_LABEL[status] || status}` }),
+  ]);
+}
+
+function terminalButton(row, label = '⌨') {
+  if (!view.latest?.terminal?.enabled) return null;
+  return el('button', {
+    class: 'term-open',
+    type: 'button',
+    title: `Open a live terminal on ${row.host} ${row.pane_id}`,
+    text: label,
+    onclick: () => term.open({
+      host: row.host,
+      pane: row.pane_id,
+      title: row.title || row.pane_id,
+      subtitle: `${row.host} · ${row.workspace} · ${row.pane_id}`,
+      canInput: view.latest?.terminal?.input !== false,
+    }),
+  });
+}
+
+function agentCard(row) {
+  const u = row.usage || {};
+  const procs = (u.procs || []).map((p) => el('div', { class: 'proc-row' }, [
+    el('span', { text: p.cmdline || p.name, title: p.cmdline || p.name }),
+    el('span', { text: pct(p.cpu_pct) }),
+    el('span', { text: bytes(p.rss) }),
+  ]));
+
+  const details = el('details', { class: 'agent-procs' }, [
+    el('summary', { text: `${u.proc_count || 0} processes · pid ${row.shell_pid ?? '?'}` }),
+    ...procs,
+  ]);
+  if (view.openPanes.has(row.key)) details.open = true;
+  details.addEventListener('toggle', () => {
+    if (details.open) view.openPanes.add(row.key);
+    else view.openPanes.delete(row.key);
+  });
+
+  return el('div', { class: 'agent-card', 'data-status': row.status }, [
+    el('div', { class: 'agent-top' }, [
+      statusPill(row.status),
+      row.focused ? el('span', { class: 'badge', text: 'focused' }) : null,
+      el('span', { class: 'agent-kind', text: `${row.agent || 'agent'} · ${row.pane_id}` }),
+      terminalButton(row),
+    ]),
+    el('div', { class: 'agent-title', text: row.title || row.workspace, title: row.title || '' }),
+    el('div', { class: 'agent-path', text: shortPath(row.cwd), title: row.cwd || '' }),
+    gitLine(row.git),
+    portsLine(row.ports, row.hostMeta),
+    el('div', { class: 'agent-usage' }, [
+      el('span', { class: 'usage-num' }, [
+        el('b', { text: pct(u.cpu_pct) }), el('span', { text: ' cpu' }),
+      ]),
+      el('span', { class: 'usage-num' }, [
+        el('b', { text: bytes(u.rss) }), el('span', { text: ' rss' }),
+      ]),
+      sparkline(row.history, { w: 76, h: 20, floor: 10 }),
+    ]),
+    details,
+  ]);
+}
+
+function renderCards(rows) {
+  const byHost = new Map();
+  for (const row of rows) {
+    if (!byHost.has(row.host)) byHost.set(row.host, []);
+    byHost.get(row.host).push(row);
+  }
+  const groups = [];
+  for (const [host, hostRows] of byHost) {
+    const cpu = hostRows.reduce((s, r) => s + (r.usage?.cpu_pct || 0), 0);
+    const rss = hostRows.reduce((s, r) => s + (r.usage?.rss || 0), 0);
+    groups.push(el('div', { class: 'host-group' }, [
+      el('div', { class: 'host-group-head' }, [
+        el('strong', { text: host }),
+        el('span', { text: `${hostRows.length} agent${hostRows.length === 1 ? '' : 's'} · ${pct(cpu)} cpu · ${bytes(rss)} rss` }),
+      ]),
+      el('div', { class: 'agent-grid' }, hostRows.map(agentCard)),
+    ]));
+  }
+  return groups;
+}
+
+function renderTable(rows) {
+  const head = ['Host', 'Workspace', 'Agent', 'Status', 'Title', 'Repo', 'Branch', 'Sync',
+                'Working tree', 'Ports', 'Working dir', 'CPU', 'RSS', 'Procs', 'Pane', 'PID'];
+  const thead = el('thead', {}, [el('tr', {}, head.map((h) => el('th', { text: h })))]);
+  const tbody = el('tbody', {}, rows.map((r) => {
+    const g = r.git;
+    const sync = !g ? '' : [g.ahead ? `↑${g.ahead}` : '', g.behind ? `↓${g.behind}` : '']
+      .filter(Boolean).join(' ') || (g.upstream ? 'in sync' : 'no upstream');
+    return el('tr', {}, [
+    el('td', { text: r.host }),
+    el('td', { text: r.workspace }),
+    el('td', { text: r.agent || '–' }),
+    el('td', {}, [statusPill(r.status)]),
+    el('td', { text: r.title || '', title: r.title || '' }),
+    el('td', { text: g ? g.repo_name : '–', title: g ? g.repo : '' }),
+    el('td', {}, [
+      el('span', { class: 'git-branch', text: g ? branchName(g) : '–' }),
+      g?.worktree ? el('span', { class: 'git-tag', text: g.worktree_name, title: g.toplevel }) : null,
+    ].filter(Boolean)),
+    el('td', { class: 'num', text: sync }),
+    el('td', {
+      class: g?.dirty ? 'git-dirty' : 'git-muted',
+      text: g ? (g.dirty ? `${dirtyCount(g)} changed` : 'clean') : '',
+      title: g ? dirtyText(g) : '',
+    }),
+    el('td', {}, (r.ports || []).map((s) => portChip(s, r.hostMeta))),
+    el('td', { class: 'path', text: r.cwd || '', title: r.cwd || '' }),
+    el('td', { class: 'num', text: pct(r.usage?.cpu_pct) }),
+    el('td', { class: 'num', text: bytes(r.usage?.rss) }),
+    el('td', { class: 'num', text: String(r.usage?.proc_count ?? 0) }),
+    el('td', {}, [el('span', { text: `${r.pane_id} ` }), terminalButton(r)].filter(Boolean)),
+    el('td', { class: 'num', text: String(r.shell_pid ?? '–') }),
+    ]);
+  }));
+  return [el('div', { class: 'table-wrap' }, [el('table', {}, [thead, tbody])])];
+}
+
+function renderChips(agents) {
+  const counts = {};
+  for (const a of agents) counts[a.status] = (counts[a.status] || 0) + 1;
+  const present = STATUS_ORDER.filter((s) => counts[s]);
+  const chips = present.map((s) => {
+    const on = view.statuses.has(s);
+    return el('button', {
+      class: `chip${on ? ' is-on' : ''}`, type: 'button', 'aria-pressed': String(on),
+      onclick: () => {
+        if (view.statuses.has(s)) view.statuses.delete(s);
+        else view.statuses.add(s);
+        render();
+      },
+    }, [
+      el('span', { class: 'dot', 'data-status': s }),
+      el('span', { text: `${STATUS_LABEL[s]} ${counts[s]}` }),
+    ]);
+  });
+  if (view.statuses.size) {
+    chips.push(el('button', {
+      class: 'chip', type: 'button',
+      onclick: () => { view.statuses.clear(); render(); },
+    }, [el('span', { text: 'clear' })]));
+  }
+  ui.statusChips.replaceChildren(...chips);
+}
+
+function renderLegend() {
+  ui.legend.replaceChildren(...STATUS_ORDER.map((s) => el('li', {}, [
+    el('span', { class: 'dot', 'data-status': s }),
+    el('span', { text: `${STATUS_ICON[s]} ${STATUS_LABEL[s]}` }),
+  ])));
+}
+
+function render() {
+  const state = view.latest;
+  if (!state) return;
+  const agents = collectAgents(state);
+  renderSummary(state, agents);
+  renderHosts(state);
+  renderProjects(agents);
+  renderChips(agents);
+  writeUrl();
+
+  const rows = sortRows(agents.filter(matches));
+  if (!rows.length) {
+    ui.agentsView.replaceChildren(el('div', {
+      class: 'empty',
+      text: agents.length ? 'No agents match the current filter.' : 'No agents running on any machine.',
+    }));
+    return;
+  }
+  ui.agentsView.replaceChildren(...(view.mode === 'table' ? renderTable(rows) : renderCards(rows)));
+}
+
+/* ------------------------------------------------------------- polling */
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function tick(force = false) {
+  try {
+    if (force) {
+      ui.liveLabel.textContent = 'polling machines…';
+      await fetch('/api/refresh', { method: 'POST' });
+      // pollers wake asynchronously and each sample takes ~1s on the far end
+      await sleep(1400);
+    }
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    view.latest = await res.json();
+    const bad = view.latest.hosts.filter((h) => h.status === 'error').length;
+    ui.liveState.dataset.state = bad === view.latest.hosts.length && bad > 0 ? 'error' : 'ok';
+    ui.liveLabel.textContent = `updated ${new Date().toLocaleTimeString()}`;
+    render();
+    if (view.autoTerm && view.latest.terminal?.enabled) {
+      const { host, pane } = view.autoTerm;
+      view.autoTerm = null;
+      const row = collectAgents(view.latest).find((r) => r.host === host && r.pane_id === pane);
+      term.open({
+        host, pane,
+        title: row?.title || pane,
+        subtitle: `${host} · ${pane}`,
+        canInput: view.latest.terminal.input !== false,
+      });
+    }
+  } catch (err) {
+    ui.liveState.dataset.state = 'error';
+    ui.liveLabel.textContent = `server unreachable (${err.message})`;
+  }
+}
+
+function schedule() {
+  clearInterval(view.timer);
+  if (view.interval > 0) view.timer = setInterval(() => tick(), view.interval);
+  if (view.interval === 0) {
+    ui.liveState.dataset.state = 'paused';
+    ui.liveLabel.textContent = 'auto-refresh paused';
+  }
+}
+
+/* --------------------------------------------------------------- wiring */
+
+/** Views are shareable: ?view=table&q=overleaf&status=working,blocked&theme=dark */
+function readUrl() {
+  const p = new URLSearchParams(location.search);
+  if (p.get('view') === 'table') view.mode = 'table';
+  if (p.get('q')) { view.query = p.get('q').toLowerCase(); ui.search.value = p.get('q'); }
+  if (p.get('sort')) { view.sort = p.get('sort'); ui.sortSelect.value = view.sort; }
+  for (const s of (p.get('status') || '').split(',').filter(Boolean)) view.statuses.add(s);
+  // deep link straight to a pane's terminal: ?termhost=nixos-ultra&termpane=wB:p1
+  if (p.get('termhost') && p.get('termpane')) {
+    view.autoTerm = { host: p.get('termhost'), pane: p.get('termpane') };
+  }
+  const theme = p.get('theme') || localStorage.getItem('herdr-hq-theme');
+  if (theme) document.documentElement.dataset.theme = theme;
+  for (const btn of document.querySelectorAll('[data-view]')) {
+    btn.classList.toggle('is-on', btn.dataset.view === view.mode);
+  }
+}
+
+function writeUrl() {
+  const p = new URLSearchParams();
+  if (view.mode !== 'cards') p.set('view', view.mode);
+  if (view.query) p.set('q', view.query);
+  if (view.sort !== 'status') p.set('sort', view.sort);
+  if (view.statuses.size) p.set('status', [...view.statuses].join(','));
+  const qs = p.toString();
+  history.replaceState(null, '', qs ? `?${qs}` : location.pathname);
+}
+
+ui.refreshSelect.addEventListener('change', () => {
+  view.interval = Number(ui.refreshSelect.value);
+  schedule();
+  if (view.interval) tick();
+});
+ui.refreshNow.addEventListener('click', () => tick(true));
+ui.search.addEventListener('input', () => {
+  view.query = ui.search.value.trim().toLowerCase();
+  render();
+});
+ui.sortSelect.addEventListener('change', () => {
+  view.sort = ui.sortSelect.value;
+  render();
+});
+for (const btn of document.querySelectorAll('[data-view]')) {
+  btn.addEventListener('click', () => {
+    view.mode = btn.dataset.view;
+    for (const other of document.querySelectorAll('[data-view]')) {
+      other.classList.toggle('is-on', other === btn);
+    }
+    render();
+  });
+}
+
+ui.themeToggle.addEventListener('click', () => {
+  const current = document.documentElement.dataset.theme
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('herdr-hq-theme', next);
+});
+
+readUrl();
+renderLegend();
+tick();
+schedule();

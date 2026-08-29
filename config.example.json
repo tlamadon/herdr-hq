@@ -1,0 +1,26 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "poll_interval": 6.0,
+  "sample_interval": 0.7,
+  "ssh_timeout": 30.0,
+  "history": 120,
+
+  "terminal_enabled": true,
+  "terminal_input": true,
+  "terminal_interval": 0.25,
+  "terminal_max_sessions": 6,
+
+  "hosts": [
+    {
+      "name": "local",
+      "transport": "local"
+    },
+    {
+      "name": "workstation",
+      "transport": "ssh",
+      "target": "workstation",
+      "python": "python3"
+    }
+  ]
+}

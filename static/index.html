@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>herdr HQ</title>
+  <link rel="stylesheet" href="/static/vendor/xterm.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🐄</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>herdr HQ</h1>
+    </div>
+    <div class="topbar-meta">
+      <span id="liveState" class="live" data-state="pending">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span id="liveLabel">connecting…</span>
+      </span>
+      <label class="field">
+        <span class="field-label">Refresh</span>
+        <select id="refreshSelect">
+          <option value="2000">2s</option>
+          <option value="5000" selected>5s</option>
+          <option value="10000">10s</option>
+          <option value="30000">30s</option>
+          <option value="0">paused</option>
+        </select>
+      </label>
+      <button id="refreshNow" class="btn" type="button">Poll now</button>
+      <button id="themeToggle" class="btn btn-icon" type="button" aria-label="Toggle colour theme">◐</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="summary" aria-label="Fleet summary">
+      <div class="hero">
+        <div class="hero-value" id="heroAgents">–</div>
+        <div class="hero-label" id="heroLabel">agents</div>
+      </div>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section aria-labelledby="machines-h">
+      <div class="section-head">
+        <h2 id="machines-h">Machines</h2>
+        <span class="section-note" id="machinesNote"></span>
+      </div>
+      <div class="host-grid" id="hostGrid"></div>
+    </section>
+
+    <section aria-labelledby="projects-h">
+      <div class="section-head">
+        <h2 id="projects-h">Projects</h2>
+        <span class="section-note" id="projectsNote"></span>
+      </div>
+      <div class="host-grid" id="projectGrid"></div>
+    </section>
+
+    <section aria-labelledby="agents-h">
+      <div class="section-head">
+        <h2 id="agents-h">Agents</h2>
+        <div class="controls">
+          <input id="search" class="input" type="search" placeholder="Filter by title, path, host…" aria-label="Filter agents">
+          <div class="chips" id="statusChips" role="group" aria-label="Filter by status"></div>
+          <label class="field">
+            <span class="field-label">Sort</span>
+            <select id="sortSelect">
+              <option value="status">status</option>
+              <option value="cpu">CPU</option>
+              <option value="mem">memory</option>
+              <option value="title">title</option>
+            </select>
+          </label>
+          <div class="viewtoggle" role="group" aria-label="View mode">
+            <button class="btn btn-seg is-on" data-view="cards" type="button">Cards</button>
+            <button class="btn btn-seg" data-view="table" type="button">Table</button>
+          </div>
+        </div>
+      </div>
+      <div id="agentsView"></div>
+    </section>
+
+    <section aria-labelledby="legend-h" class="legend-section">
+      <h2 id="legend-h" class="sr-only">Legend</h2>
+      <ul class="legend" id="legend"></ul>
+      <p class="footnote">
+        Per-agent CPU and memory are the sum over every process descending from the pane's
+        shell, sampled over a short interval on each machine. Resident memory counts shared
+        pages once per process, so agent totals can exceed the machine's used memory.
+      </p>
+    </section>
+  </main>
+
+  <div id="termOverlay" class="term-overlay" hidden>
+    <div class="term-modal" role="dialog" aria-modal="true" aria-labelledby="termTitle">
+      <header class="term-head">
+        <div class="term-ident">
+          <span id="termTitle" class="term-title">Terminal</span>
+          <span id="termWhere" class="term-where"></span>
+        </div>
+        <div class="term-tools">
+          <span id="termStatus" class="term-status" data-state="connecting">connecting…</span>
+          <label class="term-toggle">
+            <input type="checkbox" id="termInput" checked>
+            <span>Send keys</span>
+          </label>
+          <button class="btn btn-icon" id="termSmaller" type="button" aria-label="Smaller text">A−</button>
+          <button class="btn btn-icon" id="termBigger" type="button" aria-label="Larger text">A+</button>
+          <button class="btn" id="termClose" type="button">Close</button>
+        </div>
+      </header>
+      <div class="term-body"><div id="termMount" class="term-mount"></div></div>
+      <footer class="term-foot">
+        <span id="termNote">Click the screen to type — keys go to the live pane.</span>
+      </footer>
+    </div>
+  </div>
+
+  <script src="/static/vendor/xterm.js"></script>
+  <script src="/static/term.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
