@@ -3,6 +3,7 @@
 const ui = {
   liveState: document.getElementById('liveState'),
   liveLabel: document.getElementById('liveLabel'),
+  markSeen: document.getElementById('markSeen'),
   refreshSelect: document.getElementById('refreshSelect'),
   refreshNow: document.getElementById('refreshNow'),
   themeToggle: document.getElementById('themeToggle'),
@@ -25,13 +26,57 @@ const view = {
   mode: 'cards',
   query: '',
   statuses: new Set(),
-  sort: 'status',
+  sort: 'attention',
   openPanes: new Set(),
   timer: null,
   interval: 5000,
   proxied: new Map(),   // `${host}|${port}` -> preview URL from /api/preview
   dupPorts: new Set(),  // `${repo}|${port}` bound in more than one checkout
+  seen: {},             // row.key -> state_change_seq at the last look
+  activity: new Map(),  // row.key -> ms timestamp of the last observed change
+  push: 'off',          // off | live | degraded (set by push.js)
 };
+
+/* ------------------------------------------------------- unread / seen */
+
+const SEEN_KEY = 'herdr-hq.seen';
+try { view.seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}'); } catch (_) { /* fresh */ }
+
+/** Finished or blocked since you last looked at it. herdr's own idle-vs-done
+    distinction is the base signal; state_change_seq makes "looked" stick. */
+function unread(row) {
+  if (row.status !== 'blocked' && row.status !== 'done') return false;
+  if (row.state_change_seq === null || row.state_change_seq === undefined) return true;
+  return view.seen[row.key] !== row.state_change_seq;
+}
+
+function markSeen(row) {
+  if (row.state_change_seq === null || row.state_change_seq === undefined) return;
+  if (view.seen[row.key] === row.state_change_seq) return;
+  view.seen[row.key] = row.state_change_seq;
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(view.seen)); } catch (_) { /* full */ }
+  render();
+}
+
+function markAllSeen() {
+  for (const row of collectAgents(view.latest || { hosts: [] })) {
+    if (row.state_change_seq !== null && row.state_change_seq !== undefined) {
+      view.seen[row.key] = row.state_change_seq;
+    }
+  }
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(view.seen)); } catch (_) { /* full */ }
+  render();
+}
+
+/** Track status transitions we observe (poll or push) for "3m ago" labels. */
+function noteActivity(agents) {
+  if (!view.prevStatus) view.prevStatus = new Map();
+  for (const row of agents) {
+    const prev = view.prevStatus.get(row.key);
+    if (prev !== undefined && prev !== row.status) view.activity.set(row.key, Date.now());
+    view.prevStatus.set(row.key, row.status);
+  }
+}
 
 /* Git presentation. Ahead/behind come from the local remote-tracking ref — the
    collector never fetches, so "behind" is as of that repo's last fetch. */
@@ -326,6 +371,14 @@ function matches(row) {
   return hay.includes(view.query);
 }
 
+/** blocked, then unseen-done, then everything else by the usual status order. */
+function attentionRank(r) {
+  if (r.status === 'blocked') return 0;
+  if (r.status === 'done' && unread(r)) return 1;
+  const i = STATUS_ORDER.indexOf(r.status);
+  return 2 + (i < 0 ? STATUS_ORDER.length : i);
+}
+
 function sortRows(rows) {
   const byStatus = (r) => {
     const i = STATUS_ORDER.indexOf(r.status);
@@ -334,11 +387,12 @@ function sortRows(rows) {
   const cpu = (r) => r.usage?.cpu_pct || 0;
   const mem = (r) => r.usage?.rss || 0;
   const cmp = {
+    attention: (a, b) => attentionRank(a) - attentionRank(b) || cpu(b) - cpu(a),
     status: (a, b) => byStatus(a) - byStatus(b) || cpu(b) - cpu(a),
     cpu: (a, b) => cpu(b) - cpu(a),
     mem: (a, b) => mem(b) - mem(a),
     title: (a, b) => (a.title || '').localeCompare(b.title || ''),
-  }[view.sort];
+  }[view.sort] || ((a, b) => byStatus(a) - byStatus(b));
   return rows.slice().sort(cmp);
 }
 
@@ -358,10 +412,12 @@ function renderSummary(state, agents) {
   ui.heroAgents.textContent = agents.length;
   ui.heroLabel.textContent = `agents on ${online} of ${state.hosts.length} machine${state.hosts.length === 1 ? '' : 's'}`;
 
+  const unseenDone = agents.filter((a) => a.status === 'done' && unread(a)).length;
   const tiles = [
     { label: 'Working', status: 'working', value: counts.working, sub: 'actively running' },
     { label: 'Blocked', status: 'blocked', value: counts.blocked, sub: 'waiting on you' },
-    { label: 'Idle', status: 'idle', value: counts.idle + counts.done, sub: 'ready or finished' },
+    { label: 'Done · unseen', status: 'done', value: unseenDone, sub: 'finished while away' },
+    { label: 'Idle', status: 'idle', value: counts.idle + counts.done - unseenDone, sub: 'ready or already seen' },
     { label: 'Agent CPU', value: (cpu / 100).toFixed(1), sub: 'cores across the fleet' },
     { label: 'Agent memory', value: bytes(rss).split(' ')[0], sub: `${bytes(rss).split(' ')[1]} resident` },
   ];
@@ -544,6 +600,17 @@ function renderProjects(agents) {
     : 'no repositories detected';
 }
 
+function openTerminal(row) {
+  markSeen(row);
+  term.open({
+    host: row.host,
+    pane: row.pane_id,
+    title: row.title || row.pane_id,
+    subtitle: `${row.host} · ${row.workspace} · ${row.pane_id}`,
+    canInput: view.latest?.terminal?.input !== false,
+  });
+}
+
 function terminalButton(row, label = '⌨') {
   if (!view.latest?.terminal?.enabled) return null;
   return el('button', {
@@ -551,13 +618,7 @@ function terminalButton(row, label = '⌨') {
     type: 'button',
     title: `Open a live terminal on ${row.host} ${row.pane_id}`,
     text: label,
-    onclick: () => term.open({
-      host: row.host,
-      pane: row.pane_id,
-      title: row.title || row.pane_id,
-      subtitle: `${row.host} · ${row.workspace} · ${row.pane_id}`,
-      canInput: view.latest?.terminal?.input !== false,
-    }),
+    onclick: () => openTerminal(row),
   });
 }
 
@@ -572,7 +633,19 @@ function filesButton(row) {
   }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { class: 'sr-only', text: 'files' })]);
 }
 
-function agentCard(row) {
+function unreadDot(row) {
+  if (!unread(row)) return null;
+  return el('span', { class: 'unread-dot', title: 'new activity since you last looked' }, [
+    el('span', { class: 'sr-only', text: 'unread' }),
+  ]);
+}
+
+function activityAge(row) {
+  const t = view.activity.get(row.key);
+  return t ? ago(t / 1000) : null;
+}
+
+function agentCard(row, showHost = false) {
   const u = row.usage || {};
   const procs = (u.procs || []).map((p) => el('div', { class: 'proc-row' }, [
     el('span', { text: p.cmdline || p.name, title: p.cmdline || p.name }),
@@ -590,11 +663,19 @@ function agentCard(row) {
     else view.openPanes.delete(row.key);
   });
 
-  return el('div', { class: 'agent-card', 'data-status': row.status }, [
+  const age = activityAge(row);
+  const kind = [row.agent || 'agent', row.pane_id, age].filter(Boolean).join(' · ');
+  const card = el('div', {
+    class: 'agent-card',
+    'data-status': row.status,
+    'data-unread': unread(row) ? '1' : null,
+  }, [
     el('div', { class: 'agent-top' }, [
+      unreadDot(row),
       statusPill(row.status),
       row.focused ? el('span', { class: 'badge', text: 'focused' }) : null,
-      el('span', { class: 'agent-kind', text: `${row.agent || 'agent'} · ${row.pane_id}` }),
+      showHost ? el('span', { class: 'badge', text: row.host }) : null,
+      el('span', { class: 'agent-kind', text: kind }),
       filesButton(row),
       terminalButton(row),
     ]),
@@ -613,15 +694,31 @@ function agentCard(row) {
     ]),
     details,
   ]);
+  if (unread(row)) card.addEventListener('click', () => markSeen(row));
+  return card;
 }
 
 function renderCards(rows) {
+  const groups = [];
+  // With the default sort, agents that need you come first, across hosts.
+  if (view.sort === 'attention') {
+    const urgent = rows.filter((r) => attentionRank(r) < 2);
+    if (urgent.length) {
+      rows = rows.filter((r) => attentionRank(r) >= 2);
+      groups.push(el('div', { class: 'host-group attention-band' }, [
+        el('div', { class: 'host-group-head' }, [
+          el('strong', { text: 'Needs attention' }),
+          el('span', { text: `${urgent.length} agent${urgent.length === 1 ? '' : 's'} waiting on you` }),
+        ]),
+        el('div', { class: 'agent-grid' }, urgent.map((r) => agentCard(r, true))),
+      ]));
+    }
+  }
   const byHost = new Map();
   for (const row of rows) {
     if (!byHost.has(row.host)) byHost.set(row.host, []);
     byHost.get(row.host).push(row);
   }
-  const groups = [];
   for (const [host, hostRows] of byHost) {
     const cpu = hostRows.reduce((s, r) => s + (r.usage?.cpu_pct || 0), 0);
     const rss = hostRows.reduce((s, r) => s + (r.usage?.rss || 0), 0);
@@ -637,18 +734,19 @@ function renderCards(rows) {
 }
 
 function renderTable(rows) {
-  const head = ['Host', 'Workspace', 'Agent', 'Status', 'Title', 'Repo', 'Branch', 'Sync',
+  const head = ['Host', 'Workspace', 'Agent', 'Status', 'Activity', 'Title', 'Repo', 'Branch', 'Sync',
                 'Working tree', 'Ports', 'Working dir', 'CPU', 'RSS', 'Procs', 'Pane', 'PID'];
   const thead = el('thead', {}, [el('tr', {}, head.map((h) => el('th', { text: h })))]);
   const tbody = el('tbody', {}, rows.map((r) => {
     const g = r.git;
     const sync = !g ? '' : [g.ahead ? `↑${g.ahead}` : '', g.behind ? `↓${g.behind}` : '']
       .filter(Boolean).join(' ') || (g.upstream ? 'in sync' : 'no upstream');
-    return el('tr', {}, [
+    return el('tr', { 'data-unread': unread(r) ? '1' : null }, [
     el('td', { text: r.host }),
     el('td', { text: r.workspace }),
     el('td', { text: r.agent || '–' }),
-    el('td', {}, [statusPill(r.status)]),
+    el('td', {}, [unreadDot(r), statusPill(r.status)]),
+    el('td', { class: 'num', text: activityAge(r) || '' }),
     el('td', { text: r.title || '', title: r.title || '' }),
     el('td', { text: g ? g.repo_name : '–', title: g ? g.repo : '' }),
     el('td', {}, [
@@ -704,16 +802,23 @@ function renderChips(agents) {
 }
 
 function renderLegend() {
-  ui.legend.replaceChildren(...STATUS_ORDER.map((s) => el('li', {}, [
-    el('span', { class: 'dot', 'data-status': s }),
-    el('span', { text: `${STATUS_ICON[s]} ${STATUS_LABEL[s]}` }),
-  ])));
+  ui.legend.replaceChildren(
+    ...STATUS_ORDER.map((s) => el('li', {}, [
+      el('span', { class: 'dot', 'data-status': s }),
+      el('span', { text: `${STATUS_ICON[s]} ${STATUS_LABEL[s]}` }),
+    ])),
+    el('li', {}, [
+      el('span', { class: 'unread-dot', 'aria-hidden': 'true' }),
+      el('span', { text: 'unread — blocked or finished since you last looked' }),
+    ]),
+  );
 }
 
 function render() {
   const state = view.latest;
   if (!state) return;
   const agents = collectAgents(state);
+  noteActivity(agents);
   view.dupPorts = computeDupPorts(agents);
   renderSummary(state, agents);
   renderHosts(state);
@@ -800,7 +905,7 @@ function writeUrl() {
   const p = new URLSearchParams();
   if (view.mode !== 'cards') p.set('view', view.mode);
   if (view.query) p.set('q', view.query);
-  if (view.sort !== 'status') p.set('sort', view.sort);
+  if (view.sort !== 'attention') p.set('sort', view.sort);
   if (view.statuses.size) p.set('status', [...view.statuses].join(','));
   const qs = p.toString();
   history.replaceState(null, '', qs ? `?${qs}` : location.pathname);
@@ -812,6 +917,7 @@ ui.refreshSelect.addEventListener('change', () => {
   if (view.interval) tick();
 });
 ui.refreshNow.addEventListener('click', () => tick(true));
+ui.markSeen.addEventListener('click', markAllSeen);
 ui.search.addEventListener('input', () => {
   view.query = ui.search.value.trim().toLowerCase();
   render();

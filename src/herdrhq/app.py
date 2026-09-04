@@ -57,6 +57,7 @@ from starlette.staticfiles import StaticFiles
 
 from .auth import AuthGate
 from .config import Config
+from .events import EventBridge, EventHub
 from .files import FileRoutes
 from .fleet import Fleet
 from .pool import SSHPool
@@ -85,6 +86,12 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         secret = None
     fleet = Fleet(cfg, pool)
     files = FileRoutes(cfg, pool)
+    hub = EventHub()
+    bridges: list[EventBridge] = []
+    if cfg.events_enabled:
+        for poller in fleet.pollers:
+            poller.hub = hub
+            bridges.append(EventBridge(poller, hub))
 
     # ---------------------------------------------------------------- pages
 
@@ -176,6 +183,25 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         except (PermissionError, KeyError, RuntimeError, OSError, asyncio.TimeoutError) as exc:
             return err(str(exc), 400)
         return JSONResponse({"ok": True})
+
+    async def state_stream(request: Request) -> Response:
+        """SSE push channel: pane patches, poll completions, bridge health."""
+
+        async def gen():
+            q = hub.subscribe()
+            try:
+                yield ": open\n\n"
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(q.get(), 15)
+                    except asyncio.TimeoutError:
+                        yield ": ping\n\n"
+                        continue
+                    yield f"data: {json.dumps(msg)}\n\n"
+            finally:
+                hub.unsubscribe(q)
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)
 
     def _ssh_target(host: str) -> str:
         """Resolve a UI host name to the pool's ssh destination."""
@@ -305,6 +331,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/services", services),
         Route("/api/preview", preview, methods=["POST"]),
         Route("/api/state", state),
+        Route("/api/state/stream", state_stream),
         Route("/api/refresh", refresh, methods=["POST"]),
         Route("/api/term/stream", term_stream),
         Route("/api/term/input", term_input, methods=["POST"]),
@@ -364,8 +391,13 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
             print("herdr-hq: auth disabled (listen.auth: none)", flush=True)
         fleet.start()
         ensure_task = asyncio.create_task(_ensure_loop())
+        bridge_tasks = [
+            asyncio.create_task(b.run(), name=f"events-{b.poller.name}") for b in bridges
+        ]
         yield
         ensure_task.cancel()
+        for task in bridge_tasks:
+            task.cancel()
         await fleet.stop()
         await app.client.aclose()
         await pool.close()

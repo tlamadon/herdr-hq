@@ -728,3 +728,20 @@ button.port-chip { cursor: pointer; font: inherit; }
   margin-left: 5px; padding-left: 5px; border-left: 1px solid var(--grid);
   color: var(--muted); font-size: 10px;
 }
+
+/* ------------------------------------------------------- unread / inbox */
+
+.unread-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  display: inline-block; flex: none;
+}
+.agent-card[data-unread="1"] {
+  background: color-mix(in oklab, var(--accent) 4%, var(--surface-1));
+}
+tr[data-unread="1"] td { background: color-mix(in oklab, var(--accent) 5%, transparent); }
+.attention-band {
+  border: 1px solid color-mix(in oklab, var(--warning) 35%, var(--border));
+  border-radius: var(--radius); padding: 12px 14px 14px;
+  background: color-mix(in oklab, var(--warning) 3%, var(--surface-1));
+}
+#pushLabel { color: var(--muted); }

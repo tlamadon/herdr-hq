@@ -43,7 +43,8 @@ class HostPoller:
         self.transport = make_transport(pool, spec.transport, spec.ssh_target, spec.python)
         self.wake = asyncio.Event()
         self.stopping = asyncio.Event()
-        self.events_status: str | None = None  # set by the event bridge (M4)
+        self.events_status: str | None = None  # set by the event bridge
+        self.hub = None  # EventHub when push is enabled; polls announce themselves
 
         depth = cfg.history
         self.hist_t: deque[float] = deque(maxlen=depth)
@@ -117,6 +118,9 @@ class HostPoller:
             buf.append(pane.get("usage", {}).get("cpu_pct", 0.0))
         for gone in set(self.agent_hist) - live:
             del self.agent_hist[gone]
+
+        if self.hub is not None:
+            self.hub.publish({"type": "host", "host": self.name})
 
     def fail(self, error: str, started: float) -> None:
         self.state.update(

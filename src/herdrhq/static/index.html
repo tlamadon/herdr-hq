@@ -22,6 +22,7 @@
       <span id="liveState" class="live" data-state="pending">
         <span class="live-dot" aria-hidden="true"></span>
         <span id="liveLabel">connecting…</span>
+        <span id="pushLabel"></span>
       </span>
       <label class="field">
         <span class="field-label">Refresh</span>
@@ -72,12 +73,15 @@
           <label class="field">
             <span class="field-label">Sort</span>
             <select id="sortSelect">
+              <option value="attention" selected>attention</option>
               <option value="status">status</option>
               <option value="cpu">CPU</option>
               <option value="mem">memory</option>
               <option value="title">title</option>
             </select>
           </label>
+          <button id="markSeen" class="btn" type="button"
+                  title="Mark every blocked and done agent as seen">Mark seen</button>
           <div class="viewtoggle" role="group" aria-label="View mode">
             <button class="btn btn-seg is-on" data-view="cards" type="button">Cards</button>
             <button class="btn btn-seg" data-view="table" type="button">Table</button>
@@ -129,5 +133,6 @@
   <script src="/static/shared.js"></script>
   <script src="/static/term.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/push.js"></script>
 </body>
 </html>
