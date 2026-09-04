@@ -62,6 +62,7 @@ from .files import FileRoutes
 from .fleet import Fleet
 from .pool import SSHPool
 from .proxy import TOKEN_PARAM, ProxyRouter, match_service, service_fid
+from .transcript import TranscriptPeek
 
 log = logging.getLogger("herdrhq.app")
 
@@ -88,8 +89,10 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
     files = FileRoutes(cfg, pool)
     hub = EventHub()
     bridges: list[EventBridge] = []
-    if cfg.events_enabled:
-        for poller in fleet.pollers:
+    peek = TranscriptPeek(files.backend)
+    for poller in fleet.pollers:
+        poller.enricher = peek.enrich
+        if cfg.events_enabled:
             poller.hub = hub
             bridges.append(EventBridge(poller, hub))
 
@@ -202,6 +205,18 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
                 hub.unsubscribe(q)
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+    async def transcript(request: Request) -> JSONResponse:
+        host = request.query_params.get("host") or ""
+        pane_id = request.query_params.get("pane") or ""
+        poller = fleet.by_name.get(host)
+        if poller is None:
+            return err(f"unknown host {host!r}", 404)
+        panes = (poller.state.get("data") or {}).get("panes") or []
+        pane = next((p for p in panes if p.get("pane_id") == pane_id), None)
+        if pane is None:
+            return err(f"unknown pane {pane_id!r} on {host}", 404)
+        return JSONResponse(await peek.summary(host, pane))
 
     def _ssh_target(host: str) -> str:
         """Resolve a UI host name to the pool's ssh destination."""
@@ -332,6 +347,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/preview", preview, methods=["POST"]),
         Route("/api/state", state),
         Route("/api/state/stream", state_stream),
+        Route("/api/transcript", transcript),
         Route("/api/refresh", refresh, methods=["POST"]),
         Route("/api/term/stream", term_stream),
         Route("/api/term/input", term_input, methods=["POST"]),

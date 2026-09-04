@@ -134,6 +134,30 @@ How it's found, without root and without extra tooling:
 Limits: TCP only (no UDP), and on Linux only the network namespace the collector runs in —
 a port inside a container or a private netns won't appear.
 
+## Live status and the inbox
+
+Status changes stream in **live**: a tiny stdlib script per host holds a
+`events.subscribe` connection to herdr's socket and relays events back over the same
+ssh channel, so a pane flipping to `blocked` shows up in under a second — the topbar
+says `· push` while the stream is healthy, and the regular poll (which owns CPU, RAM,
+git and ports) is the automatic fallback.
+
+The dashboard sorts by **attention** by default: a cross-host *Needs attention* band
+leads with agents that are blocked or that finished while you weren't looking
+(herdr's own `done`-vs-`idle` distinction). Unread agents carry a dot until you open
+their terminal, click the card, or hit *Mark seen*; the summary splits *Done ·
+unseen* from *Idle*.
+
+## Transcript peek
+
+When herdr's agent integration is installed on a host (`herdr integration install
+claude`), each agent card shows **what the agent is actually doing** — the tool it is
+running right now, or the last thing it said — expandable to the last prompt and
+answer. The card line comes from tailing the agent's own session transcript (e.g.
+Claude Code's JSONL) over SFTP, cached by `(mtime, size)`; `GET /api/transcript`
+serves the full summary. Hosts without the integration degrade to a hint, never an
+error.
+
 ## Files and live views
 
 The **Browse** view (topbar) is a remote file manager over the same SSH connections the
@@ -289,6 +313,8 @@ browser logins survive container restarts.
 | `GET/POST /api/forwards` · `DELETE /api/forwards/{id}` | raw TCP tunnels |
 | `GET /api/services` | declared HTTP services with their proxy URLs |
 | `POST /api/preview` | `{host, port}` → ad-hoc proxied preview URL |
+| `GET /api/state/stream` | SSE push channel: pane patches, poll completions, bridge health |
+| `GET /api/transcript?host=&pane=` | what that agent is doing, from its session transcript |
 
 API calls authenticate with the session cookie, `Authorization: Bearer <secret>`, or a
 stateless `?token=<secret>` query parameter.

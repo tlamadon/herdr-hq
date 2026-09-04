@@ -45,6 +45,7 @@ class HostPoller:
         self.stopping = asyncio.Event()
         self.events_status: str | None = None  # set by the event bridge
         self.hub = None  # EventHub when push is enabled; polls announce themselves
+        self.enricher = None  # async callable stapling transcript summaries on
 
         depth = cfg.history
         self.hist_t: deque[float] = deque(maxlen=depth)
@@ -118,6 +119,12 @@ class HostPoller:
             buf.append(pane.get("usage", {}).get("cpu_pct", 0.0))
         for gone in set(self.agent_hist) - live:
             del self.agent_hist[gone]
+
+        if self.enricher is not None:
+            try:
+                await self.enricher(self)
+            except Exception as exc:  # noqa: BLE001 - enrichment never fails a poll
+                log.debug("%s: enrich failed: %s", self.name, exc)
 
         if self.hub is not None:
             self.hub.publish({"type": "host", "host": self.name})

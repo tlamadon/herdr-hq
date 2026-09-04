@@ -633,6 +633,46 @@ function filesButton(row) {
   }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { class: 'sr-only', text: 'files' })]);
 }
 
+/** One line of what the agent is actually doing, expandable for the detail.
+    Renders nothing when the host doesn't report agent sessions. */
+function transcriptLine(row) {
+  const t = row.transcript;
+  if (!t || !t.available) return null;
+  const bits = [];
+  if (t.current_tool) {
+    bits.push(el('span', { class: 'transcript-tool', text: t.current_tool.name }));
+    if (t.current_tool.detail) bits.push(el('span', { class: 'transcript-sep', text: '·' }));
+    if (t.current_tool.detail) bits.push(el('span', { class: 'transcript-detail', text: t.current_tool.detail }));
+  } else if (t.last_assistant) {
+    bits.push(el('span', { class: 'transcript-detail', text: `“${t.last_assistant}”` }));
+  }
+  if (!bits.length) return null;
+  const details = el('details', { class: 'transcript-line' }, [
+    el('summary', {}, bits),
+    el('div', { class: 'transcript-full' }, [
+      t.last_prompt ? el('div', { class: 'transcript-block' }, [
+        el('span', { class: 'transcript-label', text: 'asked' }),
+        el('span', { text: t.last_prompt }),
+      ]) : null,
+      t.last_assistant ? el('div', { class: 'transcript-block' }, [
+        el('span', { class: 'transcript-label', text: 'said' }),
+        el('span', { text: t.last_assistant }),
+      ]) : null,
+      t.current_tool ? el('div', { class: 'transcript-block' }, [
+        el('span', { class: 'transcript-label', text: 'running' }),
+        el('span', { text: `${t.current_tool.name} ${t.current_tool.detail || ''}` }),
+      ]) : null,
+    ]),
+  ]);
+  if (view.openTranscripts?.has(row.key)) details.open = true;
+  details.addEventListener('toggle', () => {
+    if (!view.openTranscripts) view.openTranscripts = new Set();
+    if (details.open) { view.openTranscripts.add(row.key); markSeen(row); }
+    else view.openTranscripts.delete(row.key);
+  });
+  return details;
+}
+
 function unreadDot(row) {
   if (!unread(row)) return null;
   return el('span', { class: 'unread-dot', title: 'new activity since you last looked' }, [
@@ -682,6 +722,7 @@ function agentCard(row, showHost = false) {
     el('div', { class: 'agent-title', text: row.title || row.workspace, title: row.title || '' }),
     el('div', { class: 'agent-path', text: shortPath(row.cwd), title: row.cwd || '' }),
     gitLine(row.git),
+    transcriptLine(row),
     portsLine(row.ports, row.hostMeta, 'Listening', row),
     el('div', { class: 'agent-usage' }, [
       el('span', { class: 'usage-num' }, [
@@ -734,7 +775,8 @@ function renderCards(rows) {
 }
 
 function renderTable(rows) {
-  const head = ['Host', 'Workspace', 'Agent', 'Status', 'Activity', 'Title', 'Repo', 'Branch', 'Sync',
+  const head = ['Host', 'Workspace', 'Agent', 'Status', 'Activity', 'Title', 'Last message',
+                'Repo', 'Branch', 'Sync',
                 'Working tree', 'Ports', 'Working dir', 'CPU', 'RSS', 'Procs', 'Pane', 'PID'];
   const thead = el('thead', {}, [el('tr', {}, head.map((h) => el('th', { text: h })))]);
   const tbody = el('tbody', {}, rows.map((r) => {
@@ -748,6 +790,13 @@ function renderTable(rows) {
     el('td', {}, [unreadDot(r), statusPill(r.status)]),
     el('td', { class: 'num', text: activityAge(r) || '' }),
     el('td', { text: r.title || '', title: r.title || '' }),
+    el('td', {
+      class: 'transcript-cell',
+      text: r.transcript?.current_tool
+        ? `▸ ${r.transcript.current_tool.name} ${r.transcript.current_tool.detail || ''}`
+        : r.transcript?.last_assistant || '',
+      title: r.transcript?.last_assistant || '',
+    }),
     el('td', { text: g ? g.repo_name : '–', title: g ? g.repo : '' }),
     el('td', {}, [
       el('span', { class: 'git-branch', text: g ? branchName(g) : '–' }),

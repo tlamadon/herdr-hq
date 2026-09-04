@@ -85,6 +85,16 @@ class LocalFs:
         st = await asyncio.to_thread(os.stat, Path(path).expanduser())
         return int(st.st_mtime), st.st_size
 
+    async def read_tail(self, path: str, n: int) -> bytes:
+        def go():
+            p = Path(path).expanduser()
+            size = p.stat().st_size
+            with open(p, "rb") as fh:
+                fh.seek(max(0, size - n))
+                return fh.read(n)
+
+        return await asyncio.to_thread(go)
+
     async def open_stream(self, path: str):
         p = Path(path).expanduser()
         st = await asyncio.to_thread(os.stat, p)
@@ -139,6 +149,18 @@ class SftpFs:
         sftp = await self._sftp()
         a = await sftp.stat(path)
         return a.mtime, a.size
+
+    async def read_tail(self, path: str, n: int) -> bytes:
+        sftp = await self._sftp()
+        attrs = await sftp.stat(path)
+        f = await sftp.open(path, "rb")
+        try:
+            if attrs.size and attrs.size > n:
+                await f.seek(attrs.size - n)
+            return await f.read(n)
+        finally:
+            with contextlib.suppress(Exception):
+                await f.close()
 
     async def open_stream(self, path: str):
         sftp = await self._sftp()

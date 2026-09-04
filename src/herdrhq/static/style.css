@@ -745,3 +745,29 @@ tr[data-unread="1"] td { background: color-mix(in oklab, var(--accent) 5%, trans
   background: color-mix(in oklab, var(--warning) 3%, var(--surface-1));
 }
 #pushLabel { color: var(--muted); }
+
+/* --------------------------------------------------------- transcript */
+
+.transcript-line { font-size: 11.5px; color: var(--muted); }
+.transcript-line summary {
+  cursor: pointer; list-style: none; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.transcript-line summary::-webkit-details-marker { display: none; }
+.transcript-line summary::before { content: "▸ "; }
+.transcript-line[open] summary::before { content: "▾ "; }
+.transcript-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ink-2); font-weight: 600;
+}
+.transcript-sep { margin: 0 4px; color: var(--baseline); }
+.transcript-full { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.transcript-block {
+  display: flex; gap: 8px; align-items: baseline; white-space: normal;
+  max-height: 7.5em; overflow: auto; line-height: 1.45;
+}
+.transcript-label {
+  flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); min-width: 44px; text-align: right;
+}
+td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
