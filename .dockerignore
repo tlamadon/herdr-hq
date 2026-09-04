@@ -1,6 +1,9 @@
 .git
 .github
 config.json
-*.md
+herdr-hq.yaml
 __pycache__/
 *.pyc
+.venv/
+dist/
+tests/

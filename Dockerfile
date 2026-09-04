@@ -1,25 +1,24 @@
-# herdr HQ has no Python dependencies, so the image is the stdlib plus an ssh client.
+# herdr HQ. asyncssh replaces the OpenSSH client, so the image needs no ssh
+# binary — but it does need your ssh material mounted (see below).
 FROM python:3.12-slim
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends openssh-client \
- && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 hq
 
 WORKDIR /app
-COPY --chown=hq:hq server.py collector.py attach.py config.example.json ./
-COPY --chown=hq:hq static ./static
-RUN chown hq:hq /app
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir . && rm -rf /app/src
 
 USER hq
 ENV PYTHONUNBUFFERED=1
 
 # 127.0.0.1 is useless inside a container — bind the published port instead.
-# Mount your config over /app/config.json and your ssh material read-only:
+# Mount your config and ssh material read-only. asyncssh reads ~/.ssh/config,
+# known_hosts and unencrypted private keys itself; for passphrase-protected
+# keys forward the agent socket and set SSH_AUTH_SOCK instead.
 #   docker run -p 8787:8787 \
-#     -v "$PWD/config.json:/app/config.json:ro" \
+#     -v "$PWD/herdr-hq.yaml:/home/hq/.config/herdr-hq/herdr-hq.yaml:ro" \
 #     -v "$HOME/.ssh:/home/hq/.ssh:ro" \
 #     ghcr.io/OWNER/herdr-hq
 EXPOSE 8787
-ENTRYPOINT ["python3", "server.py", "--host", "0.0.0.0", "--port", "8787"]
+ENTRYPOINT ["herdr-hq", "--host", "0.0.0.0", "--port", "8787"]

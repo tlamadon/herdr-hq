@@ -1,0 +1,39 @@
+# herdr HQ configuration. Copy to herdr-hq.yaml (or ~/.config/herdr-hq/) and
+# edit. Every key is optional; a missing file means one local host, no auth
+# password (a fresh token is printed at startup).
+
+listen:
+  host: 127.0.0.1
+  port: 8787
+  # password: s3cret          # permanent secret instead of the per-run token
+  # auth: none                # disable auth entirely (loopback only!)
+
+poll:
+  interval: 6.0               # seconds between collector runs per host
+  sample_interval: 0.7        # cpu sampling window inside the collector
+  timeout: 30.0
+  history: 120                # sparkline depth
+
+terminal:
+  enabled: true
+  input: true                 # allow typing into mirrored panes
+  interval: 0.25
+  max_sessions: 6
+
+events:
+  enabled: true               # push updates via herdr events.subscribe
+
+# SSH authentication is whatever plain `ssh <target>` does: ~/.ssh/config,
+# known_hosts and the ssh-agent are read directly. You must have connected to
+# each host at least once (known_hosts entry).
+hosts:
+  local:
+    transport: local          # run the collector on this machine
+  # workstation: {}           # ssh host; target defaults to the name
+  # cluster:
+  #   target: login01.example.edu
+  #   python: python3
+  #   http:
+  #     jupyter: 8888         # http://jupyter.cluster.localhost:8787/
+  #   tunnels:
+  #     - 5432                # 127.0.0.1:5432 -> cluster localhost:5432

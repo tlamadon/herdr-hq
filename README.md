@@ -4,12 +4,18 @@ A small web dashboard that SSHes into your machines, pulls each one's [herdr](ht
 session state — every agent, its status, its workspace — plus CPU and memory usage
 attributed to the individual agent sessions, and shows the whole fleet on one page.
 
-No dependencies: Python 3 standard library on the server, plain HTML/CSS/JS in the browser,
-and nothing at all installed on the remote machines beyond `python3` and `herdr` itself.
+Plain HTML/CSS/JS in the browser (no build step, no CDN), an asyncio Python server
+([Starlette](https://starlette.io) + [asyncssh](https://asyncssh.readthedocs.io)), and
+nothing at all installed on the remote machines beyond `python3` and `herdr` itself —
+the collector is piped to a bare remote interpreter over ssh.
 
 ```
-./server.py            # then open http://127.0.0.1:8787/
+uv tool install herdr-hq     # or: pip install herdr-hq
+herdr-hq                     # then open the printed http://127.0.0.1:8787/?token=... URL
 ```
+
+Every run is protected by a login token (printed at startup) or a permanent
+`listen.password` from the config; see **Auth** below.
 
 ## How agent resource usage is attributed
 
@@ -75,9 +81,9 @@ doesn't tell us where the real one is.
 
 Typing goes to a **live agent session** — the same buffer the agent is reading, so a stray
 Enter can answer a permission prompt. Keys only flow once you click into the screen, so the
-open modal never swallows keystrokes on its own. Two switches in `config.json` lock it down
-further: `"terminal_input": false` (view-only, the checkbox is disabled) or
-`"terminal_enabled": false` (no terminals at all).
+open modal never swallows keystrokes on its own. Two switches in the config lock it down
+further: `terminal.input: false` (view-only, the checkbox is disabled) or
+`terminal.enabled: false` (no terminals at all).
 
 One way this is unlike a local terminal: there's no cursor (herdr doesn't report its
 position) and the mirror runs ~250 ms behind, so typing is slightly blind.
@@ -118,52 +124,46 @@ a port inside a container or a private netns won't appear.
 
 ## Configuring machines
 
-On first run the server copies `config.example.json` to `config.json`. Edit the `hosts` list:
+Configuration lives in `herdr-hq.yaml`, looked up as `$HERDRHQ_CONFIG`, then
+`./herdr-hq.yaml`, then `~/.config/herdr-hq/herdr-hq.yaml`. A legacy herdr-hq 0.1
+`./config.json` is still read (with a migration hint logged). See
+`herdr-hq.example.yaml` for the full commented template:
 
-```json
-{
-  "host": "127.0.0.1",
-  "port": 8787,
-  "poll_interval": 6.0,
-  "sample_interval": 0.7,
-  "ssh_timeout": 30.0,
-  "history": 120,
-  "terminal_enabled": true,
-  "terminal_input": true,
+```yaml
+listen:
+  host: 127.0.0.1
+  port: 8787
+  # password: s3cret        # permanent secret instead of the per-run token
 
-  "hosts": [
-    { "name": "laptop",   "transport": "local" },
-    { "name": "workstation", "transport": "ssh", "target": "workstation" },
-    { "name": "buildbox",    "transport": "ssh", "target": "you@192.0.2.10",
-      "python": "/usr/bin/python3", "ssh_args": ["-p", "2222"] }
-  ]
-}
+poll:
+  interval: 6.0             # seconds between collector runs per host
+  sample_interval: 0.7      # CPU sampling window; longer is steadier, slower
+  history: 120              # samples kept per host for the sparklines
+
+hosts:
+  laptop:
+    transport: local        # the machine running the server
+  workstation: {}           # ssh host; target defaults to the name
+  buildbox:
+    target: you@192.0.2.10  # anything ssh accepts; a ~/.ssh/config alias is ideal
+    python: /usr/bin/python3
 ```
-
-| key | meaning |
-| --- | --- |
-| `name` | label shown in the UI |
-| `transport` | `local` (the machine running the server) or `ssh` |
-| `target` | anything `ssh` accepts — a `~/.ssh/config` host alias is ideal |
-| `python` | interpreter to run the collector with on that host (default `python3`) |
-| `ssh_args` | extra flags appended to the ssh command |
-| `connect_timeout` | ssh connect timeout in seconds (default 8) |
-| `poll_interval` | seconds between polls of every host |
-| `sample_interval` | CPU sampling window on each host; longer is steadier, slower |
-| `history` | samples kept per host for the sparklines |
 
 ### SSH requirements
 
-Hosts are polled with `BatchMode=yes`, so **key auth must work without a prompt**:
+The server connects with [asyncssh](https://asyncssh.readthedocs.io), which reads
+`~/.ssh/config`, `~/.ssh/known_hosts` and the ssh-agent (`SSH_AUTH_SOCK`) directly —
+anything you can reach with a plain, prompt-free `ssh <target>` works:
 
 ```
 ssh workstation true          # must succeed silently
 ```
 
 Load your key into the agent first (`ssh-add ~/.ssh/id_ed25519`) or use a 1Password /
-`IdentityAgent` socket. Connections are multiplexed (`ControlMaster=auto`,
-`ControlPersist=180`), so only the first poll pays the handshake cost — subsequent
-polls reuse the same connection and take tens of milliseconds.
+`IdentityAgent` socket, and connect once by hand so `known_hosts` has the host key.
+One multiplexed connection per host is kept open and reused for everything — polls,
+terminals, files — so only the first poll pays the handshake cost. Host-specific
+options (ports, jump hosts, users) belong in `~/.ssh/config`, not here.
 
 A host that can't be reached shows up as `unreachable` with the ssh error on its card;
 the rest of the fleet keeps updating.
@@ -191,19 +191,26 @@ Status comes straight from herdr: `working`, `blocked` (waiting on you), `idle`,
 ## Layout
 
 ```
-server.py            web server, per-host poll loops, terminal session bridge
-collector.py         runs on each machine; prints one JSON blob (stdlib only)
-attach.py            runs on each machine; mirrors one pane, forwards keys
-static/              index.html, style.css, app.js, term.js, vendor/xterm.js
-config.example.json  template copied to config.json on first run
+src/herdrhq/
+  app.py               HTTP routes + app factory
+  fleet.py             per-host poll loops
+  term.py              terminal session bridge
+  transport.py         runs the remote scripts, locally or over ssh
+  pool.py              one multiplexed asyncssh connection per host
+  auth.py              cookie/token login gate
+  config.py            YAML config (+ legacy config.json migration)
+  remote/collector.py  runs on each machine; prints one JSON blob (stdlib only)
+  remote/attach.py     runs on each machine; mirrors one pane, forwards keys
+  static/              index.html, style.css, app.js, term.js, vendor/xterm.js
+herdr-hq.example.yaml  commented config template
 ```
 
-`collector.py` is piped to the remote interpreter over stdin, so nothing is ever
-installed or left behind on the machines you poll. It works standalone too:
+The remote scripts are piped to the remote interpreter over stdin, so nothing is ever
+installed or left behind on the machines you poll. The collector works standalone too:
 
 ```
-python3 collector.py --pretty              # this machine
-ssh workstation python3 - --interval 1 < collector.py
+python3 src/herdrhq/remote/collector.py --pretty              # this machine
+ssh workstation python3 - --interval 1 < src/herdrhq/remote/collector.py
 ```
 
 ## Docker
@@ -212,24 +219,25 @@ Images are built by GitHub Actions and published to GHCR on every push to `main`
 
 ```
 docker run --rm -p 8787:8787 \
-  -v "$PWD/config.json:/app/config.json:ro" \
+  -v "$PWD/herdr-hq.yaml:/home/hq/.config/herdr-hq/herdr-hq.yaml:ro" \
   -v "$HOME/.ssh:/home/hq/.ssh:ro" \
   ghcr.io/<owner>/herdr-hq:latest
 ```
 
 Two things to get right, both consequences of the container being its own machine:
 
-- **SSH material must come from the host.** The image ships an ssh client but no keys.
-  Mount `~/.ssh` read-only so it gets your keys *and* `known_hosts` — polling uses
-  `BatchMode=yes`, so an unknown host key fails rather than prompting. If your key needs a
-  passphrase, forward the agent instead: `-v "$SSH_AUTH_SOCK:/ssh-agent" -e SSH_AUTH_SOCK=/ssh-agent`.
-- **A `"transport": "local"` host means the container, not your laptop**, and herdr isn't
+- **SSH material must come from the host.** The image ships no keys. Mount `~/.ssh`
+  read-only so asyncssh gets your keys *and* `known_hosts` — an unknown host key fails
+  rather than prompting. Passphrase-protected keys need the agent forwarded instead:
+  `-v "$SSH_AUTH_SOCK:/ssh-agent" -e SSH_AUTH_SOCK=/ssh-agent` (fiddly on macOS Docker;
+  an unencrypted per-dashboard key is simpler).
+- **A `transport: local` host means the container, not your laptop**, and herdr isn't
   in there. In Docker, list every machine as an `ssh` host — including the one running
   Docker.
 
 The container binds `0.0.0.0` inside its namespace; publish it to `127.0.0.1:8787:8787`
-rather than `-p 8787:8787` if you don't want it on your LAN. There is no authentication —
-see the note at the end.
+rather than `-p 8787:8787` if you don't want it on your LAN. Set a `listen.password` so
+browser logins survive container restarts.
 
 ## HTTP API
 
@@ -241,19 +249,29 @@ see the note at the end.
 | `POST /api/term/input` | `{host, pane, ops: [{text}\|{key}]}` — send keystrokes |
 | `POST /api/term/close` | `{host, pane}` — tear the mirror down now |
 
+API calls authenticate with the session cookie, `Authorization: Bearer <secret>`, or a
+stateless `?token=<secret>` query parameter.
+
 ```
-./server.py --once   # poll each host once, print the JSON, exit
+herdr-hq --once   # poll each host once, print the JSON, exit
 ```
+
+## Auth
+
+Loopback TCP ports have no unix permissions: without auth, every local user (and, via
+DNS rebinding, hostile web pages) could read your fleet state and type into your agents.
+So every run is protected by a shared secret: `listen.password` from the config if set
+(survives restarts, so browser cookies stay valid), otherwise a fresh token printed with
+the startup URL. First visit sets a 30-day cookie. `listen.auth: none` opts out.
 
 ## Notes and limits
 
-- The server binds `127.0.0.1` by default. It has no authentication and the JSON exposes
-  working directories, terminal titles and process command lines — bind it to a public
-  interface only behind something that authenticates.
-- Terminals make that sharper: anyone who can reach the port can type into your agents.
-  Keep it on loopback, or set `"terminal_input": false`.
+- The server binds `127.0.0.1` by default. The JSON exposes working directories,
+  terminal titles and process command lines; terminals can type into live agent
+  sessions. Auth is on by default — keep it that way anywhere beyond loopback, and put
+  a real reverse proxy with TLS in front for anything public.
 - On macOS the collector uses `/bin/ps` explicitly; a `procps` build of `ps` earlier on
   `PATH` (common under nix) refuses to report RSS.
-- `config.json` is gitignored — it holds your machine list.
-- `static/vendor/xterm.js` is a vendored copy of [xterm.js](https://xtermjs.org) 5.5.0,
-  MIT licensed; see `static/vendor/LICENSE-xterm.txt`.
+- `herdr-hq.yaml` and `config.json` are gitignored — they hold your machine list.
+- `src/herdrhq/static/vendor/xterm.js` is a vendored copy of
+  [xterm.js](https://xtermjs.org) 5.5.0, MIT licensed; see `vendor/LICENSE-xterm.txt`.

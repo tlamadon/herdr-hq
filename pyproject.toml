@@ -1,0 +1,45 @@
+[project]
+name = "herdr-hq"
+version = "0.2.0"
+description = "Fleet dashboard for herdr agents: monitoring, remote files, live previews"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Thibaut Lamadon" }]
+requires-python = ">=3.11"
+keywords = ["herdr", "agents", "dashboard", "ssh", "sftp", "tunnel", "monitoring"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "asyncssh>=2.14",
+    "starlette>=0.37",
+    "uvicorn>=0.29",
+    "pyyaml>=6",
+    "httpx>=0.27",
+    "websockets>=13",
+]
+
+[project.urls]
+Homepage = "https://github.com/tlamadon/herdr-hq"
+Issues = "https://github.com/tlamadon/herdr-hq/issues"
+
+[project.scripts]
+herdr-hq = "herdrhq.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/herdrhq"]
+
+[dependency-groups]
+dev = ["pytest>=8"]

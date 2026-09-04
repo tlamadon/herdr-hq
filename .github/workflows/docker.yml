@@ -21,13 +21,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      # no dependencies to install, so this is a syntax gate on the three scripts
-      - name: Compile the Python
-        run: python -m compileall -q server.py collector.py attach.py
+      - name: Install
+        run: pip install . pytest
+
+      - name: Tests
+        run: pytest -q
 
       - name: Smoke test the server
         run: |
-          python server.py --port 8899 &
+          printf 'listen: {auth: none}\nhosts: {ci: {transport: local}}\n' > herdr-hq.yaml
+          herdr-hq --port 8899 &
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8899/api/state > /dev/null && break
             sleep 1
