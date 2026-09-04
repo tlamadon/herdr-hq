@@ -85,19 +85,36 @@ function termToOps(data) {
   return ops;
 }
 
-function termIsDark() {
-  const stamped = document.documentElement.dataset.theme;
-  if (stamped) return stamped === 'dark';
-  return matchMedia('(prefers-color-scheme: dark)').matches;
+// The terminal is always dark, independent of the app theme: herdr's panes
+// (like any TUI) author their ANSI colours — including background blocks in
+// diffs and menus — for a dark terminal, so a light background renders them
+// wrong. This is also the conventional terminal feel.
+function termTheme() {
+  return TERM_THEME_DARK;
 }
 
+// Full 16-colour ANSI palettes — without these, every coloured byte an agent
+// emits falls back to xterm's stock colours, which clash with our surfaces.
+// Warm-neutral dark to match the app; a clean high-contrast light set.
 const TERM_THEME_DARK = {
-  background: '#141413', foreground: '#e6e5dd', cursor: '#3987e5',
-  selectionBackground: 'rgba(57,135,229,0.35)',
+  background: '#161615', foreground: '#e6e5dd',
+  cursor: '#e6e5dd', cursorAccent: '#161615',
+  selectionBackground: 'rgba(57,135,229,0.32)',
+  black: '#2c2c2a', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
+  blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#c8c7bd',
+  brightBlack: '#585851', brightRed: '#ff8faa', brightGreen: '#b6e389',
+  brightYellow: '#f2c67f', brightBlue: '#9db8ff', brightMagenta: '#cfb4ff',
+  brightCyan: '#a0e0ff', brightWhite: '#f4f3ec',
 };
 const TERM_THEME_LIGHT = {
-  background: '#fcfcfb', foreground: '#1a1a19', cursor: '#2a78d6',
-  selectionBackground: 'rgba(42,120,214,0.25)',
+  background: '#fbfbf9', foreground: '#25251f',
+  cursor: '#25251f', cursorAccent: '#fbfbf9',
+  selectionBackground: 'rgba(42,120,214,0.22)',
+  black: '#2e2e2b', red: '#c0392b', green: '#3a8c3a', yellow: '#a6791f',
+  blue: '#2a78d6', magenta: '#8250b4', cyan: '#2a8c8c', white: '#c8c7bd',
+  brightBlack: '#6a6a63', brightRed: '#d84a3a', brightGreen: '#469a46',
+  brightYellow: '#bd8a25', brightBlue: '#3987e5', brightMagenta: '#9660c8',
+  brightCyan: '#3a9c9c', brightWhite: '#25251f',
 };
 
 function createMirror({ mount, onStatus, onNote, getAllowInput }) {
@@ -119,11 +136,17 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     if (state.xterm) return state.xterm;
     state.xterm = new Terminal({
       fontSize: state.fontSize,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      theme: termIsDark() ? TERM_THEME_DARK : TERM_THEME_LIGHT,
+      fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Monaco, monospace',
+      fontWeight: 400,
+      fontWeightBold: 600,
+      lineHeight: 1.0,
+      letterSpacing: 0,
+      theme: termTheme(),
       cursorBlink: false,
       convertEol: false,
       scrollback: 0,          // every frame is a full screen; nothing to scroll back to
+      drawBoldTextInBrightColors: true,
+      minimumContrastRatio: 1,  // trust the agent's colours; don't auto-nudge
       disableStdin: false,
       allowProposedApi: true,
     });
@@ -247,7 +270,7 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     state.target = { host: target.host, pane: target.pane };
     state.autoFit = true;  // a fresh pane goes back to filling the box
     const t = ensureTerm();
-    t.options.theme = termIsDark() ? TERM_THEME_DARK : TERM_THEME_LIGHT;
+    t.options.theme = termTheme();
     t.write('\x1b[2J\x1b[H\x1b[?25l');
     const qs = new URLSearchParams(state.target).toString();
     const src = new EventSource(`/api/term/stream?${qs}`);

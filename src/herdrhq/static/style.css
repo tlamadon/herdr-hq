@@ -23,6 +23,7 @@
   --critical: #d03b3b;
   --shadow: 0 1px 2px rgba(11, 11, 11, .05), 0 8px 24px rgba(11, 11, 11, .05);
   --radius: 12px;
+  --term-bg: #fbfbf9;   /* matches TERM_THEME_LIGHT.background in termcore.js */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -43,6 +44,7 @@
     --series-3: #199e70;
     --series-7: #9085e9;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+    --term-bg: #161615;   /* matches TERM_THEME_DARK.background */
   }
 }
 
@@ -63,6 +65,7 @@
   --series-3: #199e70;
   --series-7: #9085e9;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+  --term-bg: #161615;
 }
 
 * { box-sizing: border-box; }
@@ -487,9 +490,10 @@ body.is-modal { overflow: hidden; }
 
 .term-body {
   flex: 1; min-height: 0; overflow: auto;
-  padding: 10px 12px;
-  background: var(--surface-1);
+  padding: 12px 14px;
+  background: #161615;   /* the terminal is always dark (see termcore.js) */
 }
+.term-body .xterm-viewport { background: transparent !important; }
 .term-mount { transform-origin: top left; width: max-content; }
 
 .term-foot {
@@ -862,7 +866,16 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   padding: 8px 18px; flex: none;
 }
 .work-toolbar-spacer { flex: 1; }
-.work-term { flex: 1; overflow: auto; padding: 4px 18px 12px; }
+/* a real terminal window: the terminal background fills the whole surface
+   (not just the grid's max-content width), with breathing room and a subtle
+   frame, so it reads as a window rather than floating text */
+.work-term {
+  flex: 1; overflow: auto; margin: 8px 18px 14px; padding: 10px 12px;
+  background: #161615;   /* the terminal is always dark (see termcore.js) */
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.work-term .xterm { padding: 0; }
+.work-term .xterm-viewport { background: transparent !important; }
 .work-note { padding: 6px 18px 10px; font-size: 11px; color: var(--muted); flex: none; }
 
 /* chat */
