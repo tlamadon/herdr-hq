@@ -108,6 +108,8 @@ def test_hosts_endpoint():
 
 def test_pages_served():
     client = TestClient(local_app(), base_url="http://localhost")
-    assert "Browse" in client.get("/browse").text
+    assert "Workspace" in client.get("/work").text
     assert "viewer" in client.get("/view").text
     assert client.get("/favicon.svg").status_code == 200
+    r = client.get("/browse", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/work"

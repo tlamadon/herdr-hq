@@ -99,6 +99,30 @@ function statusPill(status) {
   ]);
 }
 
+/** Flatten every host's agent panes into one list with host context attached. */
+function collectAgents(state) {
+  const rows = [];
+  for (const host of state.hosts) {
+    const data = host.data;
+    if (!data) continue;
+    const wsLabel = {};
+    for (const ws of data.workspaces || []) wsLabel[ws.workspace_id] = ws.label || ws.workspace_id;
+    for (const pane of data.panes || []) {
+      if (!pane.is_agent) continue;
+      rows.push({
+        host: host.name,
+        hostMeta: host,
+        key: `${host.name}/${pane.pane_id}`,
+        workspace: wsLabel[pane.workspace_id] || pane.workspace_id,
+        history: (host.agent_history || {})[pane.pane_id] || [],
+        status: pane.agent_status || 'unknown',
+        ...pane,
+      });
+    }
+  }
+  return rows;
+}
+
 /* Theme: ?theme= wins once, then localStorage, then the OS preference. */
 function initTheme() {
   const p = new URLSearchParams(location.search);

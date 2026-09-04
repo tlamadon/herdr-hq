@@ -20,9 +20,9 @@ def test_resolve_path_kinds():
         "agent_session": {"kind": "id", "value": "abc-123", "agent": "claude"},
         "cwd": "/home/u/proj",
     })
-    assert path == "~/.claude/projects/-home-u-proj/abc-123.jsonl"
+    assert path == ".claude/projects/-home-u-proj/abc-123.jsonl"
     path, why = resolve_path({"agent_session": None})
-    assert path is None and "integration" in why
+    assert path is None and "not reported" in why
     path, why = resolve_path({
         "agent_session": {"kind": "id", "value": "x", "agent": "codex"}, "cwd": "/p",
     })
@@ -190,3 +190,37 @@ def test_messages_endpoint_degrades(tmp_path):
     client = TestClient(app, base_url="http://localhost")
     assert client.get("/api/transcript/messages",
                       params={"host": "nope", "pane": "x"}).status_code == 404
+
+
+def test_locate_guesses_newest_transcript(tmp_path, monkeypatch):
+    """No agent_session: fall back to the newest .jsonl for the pane's cwd."""
+    import asyncio
+    import os
+
+    from herdrhq.files import LocalFs
+    from herdrhq.transcript import TranscriptPeek
+
+    monkeypatch.setenv("HOME", str(tmp_path))  # LocalFs resolves relative to home
+    d = tmp_path / ".claude" / "projects" / "-work-proj"
+    d.mkdir(parents=True)
+    (d / "old.jsonl").write_text('{"type":"user","message":{"content":"old"}}\n')
+    (d / "new.jsonl").write_text('{"type":"user","message":{"content":"new"}}\n')
+    os.utime(d / "old.jsonl", (1000, 1000))
+    os.utime(d / "new.jsonl", (2000, 2000))
+
+    peek = TranscriptPeek(lambda host: LocalFs())
+    pane = {"is_agent": True, "agent": "claude", "cwd": "/work/proj", "agent_session": None}
+
+    async def go():
+        path, reason, guessed = await peek.locate("local", pane)
+        assert guessed and path.endswith("new.jsonl") and reason is None
+        out = await peek.messages("local", pane)
+        assert out["available"] and out["guessed"]
+        assert out["messages"][-1]["text"] == "new"
+        # unknown cwd degrades with the reason chained
+        missing = {"is_agent": True, "agent": "claude", "cwd": "/nowhere", "agent_session": None}
+        path2, reason2, _ = await peek.locate("local", missing)
+        assert path2 is None and "no transcripts" in reason2
+        return True
+
+    assert asyncio.run(go())

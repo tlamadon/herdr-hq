@@ -3,7 +3,8 @@
 Endpoints
 ---------
 GET  /                      UI: the fleet dashboard
-GET  /browse                UI: file browser, services, tunnels, live views
+GET  /work                  UI: workspace view (sidebar, pane tabs, chat, files)
+GET  /browse                307 -> /work (the old browse view's successor)
 GET  /view?host=&path=      UI: live PDF/image/markdown viewer
 GET  /api/state             full fleet JSON (same shape as herdr-hq 0.1)
 POST /api/refresh           wake every poller now
@@ -101,8 +102,11 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
     async def index(request: Request) -> FileResponse:
         return FileResponse(STATIC / "index.html")
 
-    async def browse(request: Request) -> FileResponse:
-        return FileResponse(STATIC / "browse.html")
+    async def work(request: Request) -> FileResponse:
+        return FileResponse(STATIC / "work.html")
+
+    async def browse_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse("/work", status_code=307)
 
     async def view(request: Request) -> FileResponse:
         return FileResponse(STATIC / "viewer.html")
@@ -353,7 +357,8 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
 
     routes = [
         Route("/", index),
-        Route("/browse", browse),
+        Route("/work", work),
+        Route("/browse", browse_redirect),
         Route("/view", view),
         Route("/favicon.svg", favicon),
         Route("/__bless", bless),

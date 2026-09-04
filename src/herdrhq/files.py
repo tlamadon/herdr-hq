@@ -52,19 +52,22 @@ def err(e: object, code: int = 502) -> JSONResponse:
     return JSONResponse({"error": str(e)}, status_code=code)
 
 
+def _local_path(path: str) -> Path:
+    """Match SFTP semantics: relative paths hang off the home directory."""
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else Path.home() / p
+
+
 class LocalFs:
     """The `transport: local` backend: this machine's filesystem, thread-offloaded."""
 
     async def realpath(self, path: str) -> str:
-        p = Path(path).expanduser()
-        if not p.is_absolute():
-            p = Path.home() / p
-        return str(await asyncio.to_thread(lambda: p.resolve()))
+        return str(await asyncio.to_thread(lambda: _local_path(path).resolve()))
 
     async def listdir(self, path: str) -> list[dict]:
         def scan():
             out = []
-            with os.scandir(path) as it:
+            with os.scandir(_local_path(path)) as it:
                 for e in it:
                     try:
                         st = e.stat(follow_symlinks=True)
@@ -82,12 +85,12 @@ class LocalFs:
         return await asyncio.to_thread(scan)
 
     async def stat(self, path: str) -> tuple[int | None, int | None]:
-        st = await asyncio.to_thread(os.stat, Path(path).expanduser())
+        st = await asyncio.to_thread(os.stat, _local_path(path))
         return int(st.st_mtime), st.st_size
 
     async def read_tail(self, path: str, n: int) -> bytes:
         def go():
-            p = Path(path).expanduser()
+            p = _local_path(path)
             size = p.stat().st_size
             with open(p, "rb") as fh:
                 fh.seek(max(0, size - n))
@@ -96,7 +99,7 @@ class LocalFs:
         return await asyncio.to_thread(go)
 
     async def open_stream(self, path: str):
-        p = Path(path).expanduser()
+        p = _local_path(path)
         st = await asyncio.to_thread(os.stat, p)
         fh = await asyncio.to_thread(open, p, "rb")
 

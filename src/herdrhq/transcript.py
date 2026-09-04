@@ -33,11 +33,14 @@ def munge_cwd(cwd: str) -> str:
 
 
 def resolve_path(pane: dict) -> tuple[str | None, str | None]:
-    """(remote transcript path, reason-if-none) for a pane's agent_session."""
+    """(remote transcript path, reason-if-none) for a pane's agent_session.
+
+    Paths are home-relative (never ~-prefixed): SFTP resolves them against
+    the remote home, and LocalFs mirrors that semantic.
+    """
     sess = pane.get("agent_session")
     if not sess:
-        host_hint = "install the herdr integration on the host (herdr integration install claude)"
-        return None, f"agent session not reported — {host_hint}"
+        return None, "agent session not reported"
     kind = sess.get("kind")
     value = sess.get("value")
     if not value:
@@ -48,7 +51,7 @@ def resolve_path(pane: dict) -> tuple[str | None, str | None]:
         agent = (sess.get("agent") or pane.get("agent") or "").lower()
         cwd = pane.get("cwd")
         if agent == "claude" and cwd:
-            return f"~/.claude/projects/{munge_cwd(cwd)}/{value}.jsonl", None
+            return f".claude/projects/{munge_cwd(cwd)}/{value}.jsonl", None
         return None, f"unsupported agent format: {agent or 'unknown'}"
     return None, f"unsupported agent session kind: {kind}"
 
@@ -85,9 +88,8 @@ def parse_claude_tail(blob: bytes) -> Summary:
     line (from seeking into the file) parses as garbage and is dropped.
     """
     out = Summary()
+    # a first line cut by the tail seek fails to parse and is skipped below
     lines = blob.split(b"\n")
-    if len(lines) > 1:
-        lines = lines[1:]  # the first line is almost surely cut mid-record
 
     open_tool: dict | None = None  # newest assistant tool_use, awaiting a result
     resolved: set[str] = set()  # tool_use_ids that already got results
@@ -151,11 +153,12 @@ def parse_claude_tail(blob: bytes) -> Summary:
 
 
 def _iter_records(blob: bytes):
-    """Well-formed JSON records from a tail read, oldest first."""
-    lines = blob.split(b"\n")
-    if len(lines) > 1:
-        lines = lines[1:]  # the first line is almost surely cut mid-record
-    for raw in lines:
+    """Well-formed JSON records from a tail read, oldest first.
+
+    A first line cut mid-record by the tail seek simply fails to parse and is
+    skipped — no pre-dropping, so short transcripts keep their first record.
+    """
+    for raw in blob.split(b"\n"):
         raw = raw.strip()
         if not raw:
             continue
@@ -262,8 +265,31 @@ class TranscriptPeek:
         self.cache: dict[tuple[str, str], tuple[tuple, Summary]] = {}
         self.chat_cache: dict[tuple[str, str], tuple[tuple, dict]] = {}
 
-    async def summary(self, host: str, pane: dict) -> dict:
+    async def locate(self, host: str, pane: dict) -> tuple[str | None, str | None, bool]:
+        """(path, reason-if-none, guessed). When herdr reports no exact agent
+        session, fall back to the newest transcript in the Claude project
+        directory for the pane's cwd — right whenever one session works a
+        checkout, which is the overwhelmingly common case."""
         path, reason = resolve_path(pane)
+        if path is not None:
+            return path, None, False
+        agent = (pane.get("agent") or "").lower()
+        cwd = pane.get("cwd")
+        if agent != "claude" or not cwd:
+            return None, reason, False
+        projdir = f".claude/projects/{munge_cwd(cwd)}"
+        try:
+            entries = await self.backend_for(host).listdir(projdir)
+        except Exception:  # noqa: BLE001 - no claude project dir on that host
+            return None, f"{reason}; no transcripts found for {cwd}", False
+        logs = [e for e in entries if not e["dir"] and e["name"].endswith(".jsonl")]
+        if not logs:
+            return None, f"{reason}; no transcripts found for {cwd}", False
+        newest = max(logs, key=lambda e: e.get("mtime") or 0)
+        return f"{projdir}/{newest['name']}", None, True
+
+    async def summary(self, host: str, pane: dict) -> dict:
+        path, reason, guessed = await self.locate(host, pane)
         if path is None:
             return {"available": False, "reason": reason}
         fs = self.backend_for(host)
@@ -287,6 +313,7 @@ class TranscriptPeek:
         return {
             "available": True,
             "path": path,
+            "guessed": guessed,
             "mtime": stamp[0],
             "size": stamp[1],
             **{k: v for k, v in asdict(summary).items() if v is not None},
@@ -294,7 +321,7 @@ class TranscriptPeek:
 
     async def messages(self, host: str, pane: dict) -> dict:
         """The chat view's payload: message list + files the agent touched."""
-        path, reason = resolve_path(pane)
+        path, reason, guessed = await self.locate(host, pane)
         if path is None:
             return {"available": False, "reason": reason}
         fs = self.backend_for(host)
@@ -313,6 +340,7 @@ class TranscriptPeek:
         payload = {
             "available": True,
             "path": path,
+            "guessed": guessed,
             "mtime": stamp[0],
             "size": stamp[1],
             "messages": parse_claude_messages(blob),
@@ -327,9 +355,11 @@ class TranscriptPeek:
         """Attach transcript summaries to a fresh poll's agent panes."""
         panes = (poller.state.get("data") or {}).get("panes") or []
         for pane in panes:
-            if not pane.get("is_agent") or not pane.get("agent_session"):
+            if not pane.get("is_agent"):
                 continue
             try:
-                pane["transcript"] = await self.summary(poller.name, pane)
+                result = await self.summary(poller.name, pane)
+                if result.get("available"):
+                    pane["transcript"] = result
             except Exception as e:  # noqa: BLE001 - never fail the poll
                 log.debug("%s: transcript enrich failed: %s", poller.name, e)

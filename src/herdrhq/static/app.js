@@ -293,30 +293,6 @@ function meterRow(label, value, text) {
 
 /* ---------------------------------------------------------- data shaping */
 
-/** Flatten every host's agent panes into one list with host context attached. */
-function collectAgents(state) {
-  const rows = [];
-  for (const host of state.hosts) {
-    const data = host.data;
-    if (!data) continue;
-    const wsLabel = {};
-    for (const ws of data.workspaces || []) wsLabel[ws.workspace_id] = ws.label || ws.workspace_id;
-    for (const pane of data.panes || []) {
-      if (!pane.is_agent) continue;
-      rows.push({
-        host: host.name,
-        hostMeta: host,
-        key: `${host.name}/${pane.pane_id}`,
-        workspace: wsLabel[pane.workspace_id] || pane.workspace_id,
-        history: (host.agent_history || {})[pane.pane_id] || [],
-        status: pane.agent_status || 'unknown',
-        ...pane,
-      });
-    }
-  }
-  return rows;
-}
-
 /** Roll agents up by repository. A project spans machines; a checkout doesn't. */
 function collectProjects(agents) {
   const projects = new Map();
@@ -622,15 +598,20 @@ function terminalButton(row, label = '⌨') {
   });
 }
 
-/** Jump to the browse view rooted at this agent's checkout (or cwd). */
+/** Jump to the workspace view focused on this agent's checkout and pane. */
+function workspaceLink(row) {
+  const q = { host: row.host, pane: row.pane_id };
+  if (row.git?.toplevel) q.top = row.git.toplevel;
+  return `/work?${qs(q)}`;
+}
+
 function filesButton(row) {
-  const dir = row.git?.toplevel || row.cwd;
-  if (!dir) return null;
+  if (!row.git?.toplevel && !row.cwd) return null;
   return el('a', {
     class: 'term-open files-open',
-    href: `/browse?${qs({ host: row.host, path: dir })}`,
-    title: `Browse files at ${dir}`,
-  }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { class: 'sr-only', text: 'files' })]);
+    href: workspaceLink(row),
+    title: `Open ${row.git?.repo_name || row.cwd} in the workspace view`,
+  }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { class: 'sr-only', text: 'workspace' })]);
 }
 
 /** One line of what the agent is actually doing, expandable for the detail.
@@ -810,8 +791,8 @@ function renderTable(rows) {
     }),
     el('td', {}, (r.ports || []).map((s) => portChip(s, r.hostMeta, r))),
     el('td', { class: 'path' }, r.cwd ? [el('a', {
-      href: `/browse?${qs({ host: r.host, path: r.git?.toplevel || r.cwd })}`,
-      title: `Browse files at ${r.cwd}`, text: r.cwd,
+      href: workspaceLink(r),
+      title: `Open in the workspace view`, text: r.cwd,
     })] : []),
     el('td', { class: 'num', text: pct(r.usage?.cpu_pct) }),
     el('td', { class: 'num', text: bytes(r.usage?.rss) }),

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workspace — herdr HQ</title>
+  <link rel="stylesheet" href="/static/vendor/xterm.css">
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body class="work-body">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>herdr HQ</h1>
+    </div>
+    <nav class="topnav" aria-label="Sections">
+      <a href="/">Dashboard</a>
+      <a href="/work" class="is-here" aria-current="page">Workspace</a>
+    </nav>
+    <div class="topbar-meta">
+      <span id="liveState" class="live" data-state="pending">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span id="liveLabel">connecting…</span>
+      </span>
+      <button id="themeToggle" class="btn btn-icon" type="button" aria-label="Toggle colour theme">◐</button>
+    </div>
+  </header>
+
+  <div class="work-layout">
+    <nav class="work-side" aria-label="Projects and machines">
+      <div class="work-side-head">Projects</div>
+      <div id="projectTree" class="work-tree"></div>
+      <div class="work-side-head">Machines</div>
+      <div id="machineTree" class="work-tree"></div>
+    </nav>
+
+    <main class="work-main">
+      <div class="work-crumb" id="workCrumb">
+        <span class="empty-hint">Pick a project or machine on the left.</span>
+      </div>
+      <div class="work-tabs" id="paneTabs" role="tablist"></div>
+
+      <section class="work-content" id="termPanel" hidden>
+        <div class="work-toolbar">
+          <span id="termStatus" class="term-status" data-state="connecting">connecting…</span>
+          <span class="work-toolbar-spacer"></span>
+          <label class="term-toggle">
+            <input type="checkbox" id="workInput" checked>
+            <span>Send keys</span>
+          </label>
+          <button class="btn btn-icon" id="workSmaller" type="button" aria-label="Smaller text">A−</button>
+          <button class="btn btn-icon" id="workBigger" type="button" aria-label="Larger text">A+</button>
+        </div>
+        <div class="work-term"><div class="term-fitbox"><div id="workMount" class="term-mount"></div></div></div>
+        <div class="work-note" id="workNote"></div>
+      </section>
+
+      <section class="work-content work-chat" id="chatPanel" hidden>
+        <div id="chatScroll" class="chat-scroll"><div id="chatList" class="chat-list"></div></div>
+        <form id="chatForm" class="chat-composer">
+          <textarea id="chatText" rows="2" placeholder="Send a prompt to this agent…"
+                    aria-label="Message to the agent"></textarea>
+          <button type="submit" class="btn btn-primary" id="chatSend">Send</button>
+        </form>
+        <div class="work-note" id="chatNote"></div>
+      </section>
+
+      <section class="work-content work-files" id="filesPanel" hidden>
+        <div class="panel-head files-head">
+          <div id="workCrumbs" class="crumbs"></div>
+          <label class="term-toggle"><input type="checkbox" id="dotfiles"> <span>dotfiles</span></label>
+        </div>
+        <ul id="workListing" class="filelist"></ul>
+      </section>
+    </main>
+
+    <aside class="work-ctx" id="ctxPanel" aria-label="Context">
+      <section class="ctx-section" id="ctxFiles" hidden>
+        <div class="ctx-head">Mentioned files</div>
+        <ul id="ctxFileList" class="ctx-list"></ul>
+      </section>
+      <section class="ctx-section" id="ctxPorts" hidden>
+        <div class="ctx-head">Ports</div>
+        <div id="ctxPortList" class="ctx-ports"></div>
+      </section>
+      <section class="ctx-section" id="ctxViews" hidden>
+        <div class="ctx-head">Live views</div>
+        <ul id="ctxViewList" class="ctx-list"></ul>
+      </section>
+      <section class="ctx-section" id="ctxTunnels" hidden>
+        <div class="ctx-head">Tunnels</div>
+        <ul id="ctxTunnelList" class="ctx-list"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <div id="msg" role="status"></div>
+
+  <script src="/static/vendor/xterm.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/vendor/katex/katex.min.js"></script>
+  <script src="/static/vendor/katex/auto-render.min.js"></script>
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/shared.js"></script>
+  <script src="/static/termcore.js"></script>
+  <script src="/static/md.js"></script>
+  <script src="/static/work.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+KaTeX 0.16.11 — https://katex.org
+Copyright (c) 2013-2020 Khan Academy and other contributors. MIT licensed.
+Includes katex.min.js, katex.min.css, contrib/auto-render.min.js and the
+woff2 fonts referenced by the stylesheet.

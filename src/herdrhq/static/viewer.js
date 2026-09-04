@@ -92,7 +92,7 @@ async function render(version) {
   try {
     const url = `/api/fs/file?${qs({ host, path, v: version })}`;
     const what = kind === 'image' ? await renderImage(url)
-      : kind === 'markdown' ? await renderMarkdown(url)
+      : kind === 'markdown' ? await renderMarkdownFile(url)
       : kind === 'text' ? await renderText(url)
       : await renderPdf(url);
     meta.textContent = `${what} · updated ${new Date().toLocaleTimeString()}`;
@@ -136,44 +136,10 @@ async function fetchText(url) {
   return r.text();
 }
 
-/** Rewrite the relative links/images a README points at into /api/fs/file
-    URLs on the same host, so figures and cross-links resolve. */
-function rewriteRelative(container, version) {
-  const resolve = (rel) => {
-    const stack = dirName.split('/').filter(Boolean);
-    for (const part of rel.split('/')) {
-      if (part === '' || part === '.') continue;
-      else if (part === '..') stack.pop();
-      else stack.push(part);
-    }
-    return `/${stack.join('/')}`;
-  };
-  for (const img of container.querySelectorAll('img[src]')) {
-    const src = img.getAttribute('src');
-    if (/^(https?:|data:|\/)/i.test(src)) continue;
-    img.src = `/api/fs/file?${qs({ host, path: resolve(src), v: version })}`;
-  }
-  for (const a of container.querySelectorAll('a[href]')) {
-    const href = a.getAttribute('href');
-    if (/^(https?:|mailto:|#|\/)/i.test(href)) {
-      if (/^https?:/i.test(href)) { a.target = '_blank'; a.rel = 'noopener'; }
-      continue;
-    }
-    const resolved = resolve(href);
-    a.href = MD_RE.test(resolved) || TEXT_RE.test(resolved)
-      ? `/view?${qs({ host, path: resolved })}`
-      : `/api/fs/file?${qs({ host, path: resolved })}`;
-    a.target = '_blank';
-  }
-}
-
-async function renderMarkdown(url) {
+async function renderMarkdownFile(url) {
   const text = await fetchText(url);
-  const body = el('div', { class: 'md-body' });
-  // marked does not sanitize; these are remote files rendered on the
-  // authenticated origin, so DOMPurify is non-negotiable.
-  body.innerHTML = DOMPurify.sanitize(marked.parse(text));
-  rewriteRelative(body, url.split('v=').pop());
+  // the shared pipeline (md.js): marked -> DOMPurify -> link rewrite -> hljs -> KaTeX
+  const body = renderMarkdown(text, { host, baseDir: dirName, version: url.split('v=').pop() });
   const next = el('div', { class: 'pageset' }, [body]);
   swap(next);
   return `${bytes(text.length)} markdown`;

@@ -150,21 +150,34 @@ unseen* from *Idle*.
 
 ## Transcript peek
 
-When herdr's agent integration is installed on a host (`herdr integration install
-claude`), each agent card shows **what the agent is actually doing** — the tool it is
-running right now, or the last thing it said — expandable to the last prompt and
-answer. The card line comes from tailing the agent's own session transcript (e.g.
-Claude Code's JSONL) over SFTP, cached by `(mtime, size)`; `GET /api/transcript`
-serves the full summary. Hosts without the integration degrade to a hint, never an
-error.
+Each agent card shows **what the agent is actually doing** — the tool it is running
+right now, or the last thing it said — expandable to the last prompt and answer. The
+line comes from tailing the agent's own session transcript (e.g. Claude Code's JSONL)
+over SFTP, cached by `(mtime, size)`. The exact session comes from herdr's agent
+integration when installed (`herdr integration install claude`); otherwise the newest
+transcript for the pane's working directory is used. `GET /api/transcript` serves the
+summary, `GET /api/transcript/messages` the chat view's full message list.
 
-## Files and live views
+## The Workspace view
 
-The **Browse** view (topbar) is a remote file manager over the same SSH connections the
-pollers use: pick a host chip — or type any `~/.ssh/config` alias — and walk its
-filesystem over SFTP. An **Agent workdirs** panel lists every checkout an agent is
-working in across the fleet, one click from its files; every agent card on the
-dashboard has a matching **🗀** button.
+The second view (topbar → **Workspace**, `/work`) is where you *work with* an agent
+rather than watch it. A left sidebar lists **projects**, expanding into their
+checkouts — `branch @ machine`, worktrees marked — plus a **Machines** section for
+panes outside any repo. Selecting a checkout puts its herdr panes in a **tab strip**;
+the active tab is a live terminal mirror, and agent panes toggle **Terminal ⇄ Chat**:
+
+- **Chat** renders the agent's own session transcript as a conversation — markdown
+  with **KaTeX math**, **highlighted code**, tables — with tool calls as compact rows
+  (`▸ Bash · pytest -q`). A composer at the bottom sends your text straight into the
+  live pane (Enter included), so you can steer the agent like any chat app. The
+  transcript comes from herdr's reported agent session when available, else from the
+  newest Claude Code log for the pane's working directory.
+- **Files** is a per-checkout browser (SFTP); files open in the live viewer.
+- The right panel shows the **files the agent touched** (from its tool calls, newest
+  first, one click into the viewer), the checkout's **listening ports** (same
+  direct/proxy chips as the dashboard), plus live views and tunnels.
+
+Every agent card on the dashboard has a **🗀** button that deep-links here.
 
 Files open in a **live viewer** (`/view`) that re-renders in place whenever the remote
 file settles on a new `(mtime, size)` — a `latexmk` still mid-write never renders as

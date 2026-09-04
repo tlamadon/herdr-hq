@@ -1,0 +1,2 @@
+Highlight.js v11.10.0 (common languages build) — https://highlightjs.org
+(c) 2006-2024 Josh Goebel and contributors. BSD-3-Clause licensed.
