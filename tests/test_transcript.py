@@ -212,15 +212,124 @@ def test_locate_guesses_newest_transcript(tmp_path, monkeypatch):
     pane = {"is_agent": True, "agent": "claude", "cwd": "/work/proj", "agent_session": None}
 
     async def go():
-        path, reason, guessed = await peek.locate("local", pane)
-        assert guessed and path.endswith("new.jsonl") and reason is None
+        path, reason, guessed, fmt = await peek.locate("local", pane)
+        assert guessed and path.endswith("new.jsonl") and reason is None and fmt == "claude"
         out = await peek.messages("local", pane)
         assert out["available"] and out["guessed"]
         assert out["messages"][-1]["text"] == "new"
         # unknown cwd degrades with the reason chained
         missing = {"is_agent": True, "agent": "claude", "cwd": "/nowhere", "agent_session": None}
-        path2, reason2, _ = await peek.locate("local", missing)
-        assert path2 is None and "no transcripts" in reason2
+        path2, reason2, _, _ = await peek.locate("local", missing)
+        assert path2 is None and "no Claude transcripts" in reason2
         return True
 
     assert asyncio.run(go())
+
+
+# ------------------------------------------------------------------- codex
+
+
+def codex_blob():
+    return jl(
+        {"timestamp": "2026-09-04T10:00:00Z", "type": "session_meta",
+         "payload": {"id": "abc", "cwd": "/work/proj", "model_provider": "openai"}},
+        {"timestamp": "2026-09-04T10:00:01Z", "type": "event_msg",
+         "payload": {"type": "user_message", "message": "add host uoc-ultra"}},
+        {"timestamp": "2026-09-04T10:00:02Z", "type": "event_msg",
+         "payload": {"type": "agent_message", "message": "Inspecting the layout first."}},
+        {"timestamp": "2026-09-04T10:00:03Z", "type": "response_item",
+         "payload": {"type": "function_call", "name": "exec_command", "call_id": "c1",
+                     "arguments": "{\"cmd\": \"find hosts -type f\"}"}},
+        {"timestamp": "2026-09-04T10:00:04Z", "type": "response_item",
+         "payload": {"type": "function_call_output", "call_id": "c1", "output": "ok"}},
+        {"timestamp": "2026-09-04T10:00:05Z", "type": "event_msg",
+         "payload": {"type": "agent_message", "message": "Added the host."}},
+        {"timestamp": "2026-09-04T10:00:06Z", "type": "response_item",
+         "payload": {"type": "function_call", "name": "exec_command", "call_id": "c2",
+                     "arguments": "{\"cmd\": \"nix build\"}"}},
+    )
+
+
+def test_parse_codex_messages():
+    from herdrhq.transcript import parse_codex_messages
+
+    msgs = parse_codex_messages(codex_blob())
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[0]["text"] == "add host uoc-ultra"
+    a = msgs[1]
+    assert a["text"] == "Inspecting the layout first.\n\nAdded the host."
+    assert [t["detail"] for t in a["tools"]] == ["find hosts -type f", "nix build"]
+
+
+def test_parse_codex_tail_current_tool():
+    from herdrhq.transcript import parse_codex_tail
+
+    s = parse_codex_tail(codex_blob())
+    assert s.last_prompt == "add host uoc-ultra"
+    assert s.last_assistant == "Added the host."
+    # c1 got its output; c2 has none and nothing follows it — still running
+    assert s.current_tool == {"name": "exec_command", "detail": "nix build"}
+
+
+def test_codex_find_by_cwd_and_id(tmp_path, monkeypatch):
+    import asyncio
+    import json as jsonlib
+
+    from herdrhq.files import LocalFs
+    from herdrhq.transcript import TranscriptPeek
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
+    d.mkdir(parents=True)
+
+    def rollout(name, cwd):
+        (d / name).write_text(jsonlib.dumps(
+            {"type": "session_meta", "payload": {"id": name, "cwd": cwd}}) + "\n")
+
+    rollout("rollout-2026-09-04T10-00-00-aaa.jsonl", "/other/place")
+    rollout("rollout-2026-09-04T11-00-00-bbb.jsonl", "/work/proj")
+
+    peek = TranscriptPeek(lambda host: LocalFs())
+    pane = {"is_agent": True, "agent": "codex", "cwd": "/work/proj", "agent_session": None}
+
+    async def go():
+        path, reason, guessed, fmt = await peek.locate("local", pane)
+        assert path and path.endswith("bbb.jsonl") and guessed and fmt == "codex"
+        by_id = {"is_agent": True, "agent": "codex", "cwd": "/x",
+                 "agent_session": {"kind": "id", "agent": "codex", "value": "aaa"}}
+        path2, _, guessed2, fmt2 = await peek.locate("local", by_id)
+        assert path2 and path2.endswith("aaa.jsonl") and not guessed2 and fmt2 == "codex"
+        nowhere = {"is_agent": True, "agent": "codex", "cwd": "/nope", "agent_session": None}
+        path3, reason3, _, _ = await peek.locate("local", nowhere)
+        assert path3 is None and "no codex session" in reason3
+        return True
+
+    assert asyncio.run(go())
+
+
+def test_unsupported_agent_reason():
+    import asyncio
+
+    from herdrhq.files import LocalFs
+    from herdrhq.transcript import TranscriptPeek
+
+    peek = TranscriptPeek(lambda host: LocalFs())
+    pane = {"is_agent": True, "agent": "gemini", "cwd": "/p", "agent_session": None}
+
+    async def go():
+        path, reason, _, _ = await peek.locate("local", pane)
+        assert path is None and "not supported for gemini" in reason
+        return True
+
+    assert asyncio.run(go())
+
+
+def test_codex_head_cwd_truncated():
+    from herdrhq.transcript import _codex_head_cwd
+
+    # a header cut mid-instructions, as a bounded read produces
+    head = (b'{"timestamp":"t","type":"session_meta","payload":{"id":"x",'
+            b'"cwd":"/home/u/work tree","originator":"codex_cli_rs",'
+            b'"base_instructions":{"text":"You are Codex, based on GPT')
+    assert _codex_head_cwd(head) == "/home/u/work tree"
+    assert _codex_head_cwd(b"garbage") is None

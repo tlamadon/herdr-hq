@@ -64,7 +64,8 @@ def _snip(text: str, limit: int = SNIP) -> str:
 def _tool_detail(inp: dict) -> str:
     if not isinstance(inp, dict):
         return ""
-    for key in ("command", "description", "file_path", "path", "pattern", "prompt", "url", "query"):
+    for key in ("command", "cmd", "description", "file_path", "path", "pattern",
+                "prompt", "url", "query"):
         v = inp.get(key)
         if isinstance(v, str) and v.strip():
             return _snip(v, 120)
@@ -231,6 +232,102 @@ def parse_claude_messages(blob: bytes, limit: int = CHAT_LIMIT) -> list[dict]:
     return out[-limit:]
 
 
+# ------------------------------------------------------------------ codex
+
+
+def _codex_head_cwd(head: bytes) -> str | None:
+    """The cwd from a rollout's session_meta header. The meta line embeds the
+    agent's full base instructions and easily exceeds any sane head read, so
+    a truncated line is the norm — but cwd sits in the first few hundred
+    bytes, so fall back to plucking it straight from the bytes."""
+    try:
+        meta = json.loads(head.split(b"\n", 1)[0])
+        return (meta.get("payload") or {}).get("cwd")
+    except json.JSONDecodeError:
+        m = re.search(rb'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"', head)
+        if not m:
+            return None
+        try:
+            return json.loads(b'"' + m.group(1) + b'"')
+        except json.JSONDecodeError:
+            return None
+
+
+def _codex_tool(payload: dict) -> dict:
+    args = payload.get("arguments") or payload.get("input") or ""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {"command": args}
+    return {
+        "name": payload.get("name") or "tool",
+        "detail": _tool_detail(args if isinstance(args, dict) else {}),
+    }
+
+
+def parse_codex_messages(blob: bytes, limit: int = CHAT_LIMIT) -> list[dict]:
+    """Codex CLI rollout files: event_msg user/agent messages are the clean
+    conversation; function calls attach to the running assistant turn."""
+    out: list[dict] = []
+
+    def assistant_turn(ts):
+        if out and out[-1]["role"] == "assistant":
+            return out[-1]
+        entry = {"role": "assistant", "ts": ts}
+        out.append(entry)
+        return entry
+
+    for rec in _iter_records(blob):
+        rtype = rec.get("type")
+        p = rec.get("payload") or {}
+        ts = rec.get("timestamp")
+        if rtype == "event_msg":
+            ptype = p.get("type")
+            if ptype == "user_message" and p.get("message"):
+                out.append({"role": "user", "text": str(p["message"]), "ts": ts})
+            elif ptype == "agent_message" and p.get("message"):
+                entry = assistant_turn(ts)
+                entry["text"] = "\n\n".join(filter(None, [entry.get("text"), str(p["message"])]))
+                entry["ts"] = ts
+        elif rtype == "response_item" and p.get("type") in ("function_call", "custom_tool_call"):
+            entry = assistant_turn(ts)
+            entry["tools"] = (entry.get("tools") or []) + [_codex_tool(p)]
+    return out[-limit:]
+
+
+def parse_codex_tail(blob: bytes) -> Summary:
+    """Card summary for a codex rollout, same shape as the claude one."""
+    out = Summary()
+    open_tool: dict | None = None
+    answered: set[str] = set()  # call_ids whose outputs we've already passed
+    for rec in reversed(list(_iter_records(blob))):
+        rtype = rec.get("type")
+        p = rec.get("payload") or {}
+        if out.ts is None and rec.get("timestamp"):
+            out.ts = rec["timestamp"]
+        if rtype == "event_msg":
+            ptype = p.get("type")
+            if ptype == "user_message" and out.last_prompt is None and p.get("message"):
+                out.last_prompt = _snip(str(p["message"]))
+            elif ptype == "agent_message" and out.last_assistant is None and p.get("message"):
+                out.last_assistant = _snip(str(p["message"]))
+        elif rtype == "response_item":
+            ptype = p.get("type")
+            if ptype in ("function_call_output", "custom_tool_call_output"):
+                answered.add(p.get("call_id") or "")
+            elif (ptype in ("function_call", "custom_tool_call")
+                  and open_tool is None and out.last_assistant is None
+                  and p.get("call_id") not in answered):
+                open_tool = _codex_tool(p)
+        elif rtype == "session_meta" and out.model is None:
+            out.model = (p.get("model_provider") or None)
+        if out.last_prompt and out.last_assistant:
+            break
+    out.current_tool = open_tool
+    return out
+
+
 _PATH_KEYS = ("file_path", "notebook_path", "path")
 
 
@@ -264,32 +361,107 @@ class TranscriptPeek:
         self.backend_for = backend_for  # host -> LocalFs | SftpFs
         self.cache: dict[tuple[str, str], tuple[tuple, Summary]] = {}
         self.chat_cache: dict[tuple[str, str], tuple[tuple, dict]] = {}
+        self.codex_cache: dict[tuple[str, str], str] = {}  # (host, cwd|id) -> path
 
-    async def locate(self, host: str, pane: dict) -> tuple[str | None, str | None, bool]:
-        """(path, reason-if-none, guessed). When herdr reports no exact agent
-        session, fall back to the newest transcript in the Claude project
-        directory for the pane's cwd — right whenever one session works a
-        checkout, which is the overwhelmingly common case."""
+    CODEX_ROOT = ".codex/sessions"
+    CODEX_PROBES = 25  # header reads per search; sessions live in date dirs
+
+    async def _codex_find(self, host: str, cwd: str | None = None,
+                          session_id: str | None = None) -> str | None:
+        """Walk ~/.codex/sessions newest-first for the rollout matching a
+        session id (by filename) or a working directory (by the session_meta
+        header on line one). Bounded probing; the hit is cached and
+        re-validated by stat in the caller."""
+        key = (host, session_id or cwd or "")
+        cached = self.codex_cache.get(key)
+        fs = self.backend_for(host)
+        if cached:
+            try:
+                await fs.stat(cached)
+                return cached
+            except Exception:  # noqa: BLE001 - rotated away; re-probe
+                self.codex_cache.pop(key, None)
+
+        async def subdirs(path):
+            try:
+                return sorted((e["name"] for e in await fs.listdir(path) if e["dir"]),
+                              reverse=True)
+            except Exception:  # noqa: BLE001 - no codex on this host
+                return []
+
+        probes = 0
+        for year in (await subdirs(self.CODEX_ROOT))[:2]:
+            for month in await subdirs(f"{self.CODEX_ROOT}/{year}"):
+                for day in await subdirs(f"{self.CODEX_ROOT}/{year}/{month}"):
+                    dirp = f"{self.CODEX_ROOT}/{year}/{month}/{day}"
+                    try:
+                        files = [e for e in await fs.listdir(dirp)
+                                 if not e["dir"] and e["name"].endswith(".jsonl")]
+                    except Exception:  # noqa: BLE001
+                        continue
+                    files.sort(key=lambda e: e["name"], reverse=True)
+                    for entry in files:
+                        path = f"{dirp}/{entry['name']}"
+                        if session_id:
+                            if session_id in entry["name"]:
+                                self.codex_cache[key] = path
+                                return path
+                            continue
+                        probes += 1
+                        if probes > self.CODEX_PROBES:
+                            return None
+                        try:
+                            head = await fs.read_head(path, 4096)
+                        except Exception:  # noqa: BLE001 - unreadable header
+                            continue
+                        if _codex_head_cwd(head) == cwd:
+                            self.codex_cache[key] = path
+                            return path
+        return None
+
+    async def locate(self, host: str, pane: dict) -> tuple[str | None, str | None, bool, str]:
+        """(path, reason-if-none, guessed, format). When herdr reports no
+        exact agent session, fall back per agent: claude gets the newest
+        transcript in its project directory for the pane's cwd, codex gets
+        the rollout whose header cwd matches — right whenever one session
+        works a checkout, which is the overwhelmingly common case."""
+        sess = pane.get("agent_session") or {}
+        agent = (sess.get("agent") or pane.get("agent") or "").lower()
+        cwd = pane.get("cwd")
+        fmt = "codex" if agent == "codex" else "claude"
+
         path, reason = resolve_path(pane)
         if path is not None:
-            return path, None, False
-        agent = (pane.get("agent") or "").lower()
-        cwd = pane.get("cwd")
-        if agent != "claude" or not cwd:
-            return None, reason, False
-        projdir = f".claude/projects/{munge_cwd(cwd)}"
-        try:
-            entries = await self.backend_for(host).listdir(projdir)
-        except Exception:  # noqa: BLE001 - no claude project dir on that host
-            return None, f"{reason}; no transcripts found for {cwd}", False
-        logs = [e for e in entries if not e["dir"] and e["name"].endswith(".jsonl")]
-        if not logs:
-            return None, f"{reason}; no transcripts found for {cwd}", False
-        newest = max(logs, key=lambda e: e.get("mtime") or 0)
-        return f"{projdir}/{newest['name']}", None, True
+            if ".codex/" in path:
+                fmt = "codex"
+            return path, None, False, fmt
+        if sess.get("kind") == "id" and agent == "codex" and sess.get("value"):
+            found = await self._codex_find(host, session_id=str(sess["value"]))
+            if found:
+                return found, None, False, "codex"
+
+        if agent == "claude" and cwd:
+            projdir = f".claude/projects/{munge_cwd(cwd)}"
+            try:
+                entries = await self.backend_for(host).listdir(projdir)
+                logs = [e for e in entries if not e["dir"] and e["name"].endswith(".jsonl")]
+            except Exception:  # noqa: BLE001 - no claude project dir on that host
+                logs = []
+            if logs:
+                newest = max(logs, key=lambda e: e.get("mtime") or 0)
+                return f"{projdir}/{newest['name']}", None, True, "claude"
+            return None, f"no Claude transcripts found for {cwd}", False, fmt
+        if agent == "codex" and cwd:
+            found = await self._codex_find(host, cwd=cwd)
+            if found:
+                return found, None, True, "codex"
+            return None, f"no codex session found for {cwd}", False, fmt
+        if agent not in ("claude", "codex"):
+            return None, f"chat is not supported for {agent or 'unknown'} agents yet", False, fmt
+        return None, reason, False, fmt
 
     async def summary(self, host: str, pane: dict) -> dict:
-        path, reason, guessed = await self.locate(host, pane)
+        path, reason, guessed, fmt = await self.locate(host, pane)
         if path is None:
             return {"available": False, "reason": reason}
         fs = self.backend_for(host)
@@ -306,7 +478,7 @@ class TranscriptPeek:
                 blob = await fs.read_tail(path, TAIL_BYTES)
             except Exception as e:  # noqa: BLE001
                 return {"available": False, "reason": f"transcript unreadable: {e}", "path": path}
-            summary = parse_claude_tail(blob)
+            summary = parse_codex_tail(blob) if fmt == "codex" else parse_claude_tail(blob)
             self.cache[key] = (stamp, summary)
             if len(self.cache) > 512:  # panes come and go; keep it bounded
                 self.cache.pop(next(iter(self.cache)))
@@ -321,7 +493,7 @@ class TranscriptPeek:
 
     async def messages(self, host: str, pane: dict) -> dict:
         """The chat view's payload: message list + files the agent touched."""
-        path, reason, guessed = await self.locate(host, pane)
+        path, reason, guessed, fmt = await self.locate(host, pane)
         if path is None:
             return {"available": False, "reason": reason}
         fs = self.backend_for(host)
@@ -341,10 +513,12 @@ class TranscriptPeek:
             "available": True,
             "path": path,
             "guessed": guessed,
+            "format": fmt,
             "mtime": stamp[0],
             "size": stamp[1],
-            "messages": parse_claude_messages(blob),
-            "files": mentioned_files(blob),
+            "messages": (parse_codex_messages(blob) if fmt == "codex"
+                         else parse_claude_messages(blob)),
+            "files": [] if fmt == "codex" else mentioned_files(blob),
         }
         self.chat_cache[key] = (stamp, payload)
         if len(self.chat_cache) > 64:  # chat payloads are chunky; keep few

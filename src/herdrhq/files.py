@@ -98,6 +98,13 @@ class LocalFs:
 
         return await asyncio.to_thread(go)
 
+    async def read_head(self, path: str, n: int) -> bytes:
+        def go():
+            with open(_local_path(path), "rb") as fh:
+                return fh.read(n)
+
+        return await asyncio.to_thread(go)
+
     async def open_stream(self, path: str):
         p = _local_path(path)
         st = await asyncio.to_thread(os.stat, p)
@@ -160,6 +167,15 @@ class SftpFs:
         try:
             if attrs.size and attrs.size > n:
                 await f.seek(attrs.size - n)
+            return await f.read(n)
+        finally:
+            with contextlib.suppress(Exception):
+                await f.close()
+
+    async def read_head(self, path: str, n: int) -> bytes:
+        sftp = await self._sftp()
+        f = await sftp.open(path, "rb")
+        try:
             return await f.read(n)
         finally:
             with contextlib.suppress(Exception):
