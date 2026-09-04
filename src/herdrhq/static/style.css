@@ -830,20 +830,30 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   overflow: hidden; text-overflow: ellipsis;
 }
 .work-tabs {
-  display: flex; align-items: center; gap: 4px; padding: 8px 18px 0;
-  border-bottom: 1px solid var(--grid); overflow-x: auto; flex: none;
+  display: flex; align-items: center; gap: 12px; padding: 6px 18px 0;
+  border-bottom: 1px solid var(--grid); flex: none; min-width: 0;
+}
+.work-tab-scroll {
+  display: flex; align-items: stretch; gap: 2px;
+  overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: thin;
 }
 .work-tab {
   display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--grid); border-bottom: 0;
-  border-radius: 8px 8px 0 0; background: var(--surface-2);
-  color: var(--ink-2); font: inherit; font-size: 12px; padding: 6px 12px;
+  border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  background: none; border-radius: 0;
+  color: var(--muted); font: inherit; font-size: 12px; padding: 7px 10px 8px;
   cursor: pointer; white-space: nowrap;
 }
-.work-tab.is-active { background: var(--surface-1); color: var(--ink); font-weight: 600; }
+.work-tab:hover { color: var(--ink); }
+.work-tab.is-active {
+  color: var(--ink); font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.work-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .work-tab-id { color: var(--muted); font-size: 10.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.work-tab-files { margin-left: 8px; }
-.work-mode { margin-left: auto; flex: none; margin-bottom: 4px; }
+.work-tab-files { border-left: 1px solid var(--grid); margin-left: 6px; padding-left: 14px; }
+.work-mode { flex: none; margin-bottom: 5px; }
+.work-mode .btn-seg { font-size: 11.5px; padding: 4px 10px; }
 
 .work-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .work-content[hidden] { display: none; }
@@ -859,7 +869,7 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .chat-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .chat-list {
   display: flex; flex-direction: column; gap: 14px;
-  padding: 16px 20px 24px; max-width: 88ch; margin: 0 auto; width: 100%;
+  padding: 16px 24px 24px; width: 100%; box-sizing: border-box;
 }
 .chat-msg { min-width: 0; }
 .chat-msg.is-user {
@@ -880,8 +890,8 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   overflow: hidden; text-overflow: ellipsis;
 }
 .chat-composer {
-  display: flex; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--grid);
-  flex: none; max-width: 88ch; margin: 0 auto; width: 100%; box-sizing: border-box;
+  display: flex; gap: 8px; padding: 10px 24px; border-top: 1px solid var(--grid);
+  flex: none; width: 100%; box-sizing: border-box;
 }
 .chat-composer textarea {
   flex: 1; resize: none; font: inherit; font-size: 13px; color: var(--ink);
@@ -916,7 +926,13 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .ctx-list li a { color: var(--accent); text-decoration: none; overflow: hidden; text-overflow: ellipsis; flex: 1; }
 .ctx-list li a:hover { text-decoration: underline; }
 .ctx-list .pin { color: var(--muted); flex: none; }
-.ctx-ports { display: flex; flex-wrap: wrap; gap: 6px; }
+.ctx-ports { display: flex; flex-direction: column; gap: 5px; }
+.ctx-port-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ctx-port-proc {
+  color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ctx-hint { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
 
 /* hljs — colors from the palette, both themes */
 .md-body pre code.hljs { background: none; padding: 0; }

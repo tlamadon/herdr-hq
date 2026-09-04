@@ -304,9 +304,10 @@ function renderTabs() {
       onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'files'),
     }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { text: 'Files' })]));
   }
-  // the Terminal ⇄ Chat toggle rides at the right edge of the strip
+  const strip = [el('div', { class: 'work-tab-scroll' }, tabs)];
+  // the Terminal ⇄ Chat toggle sits fixed at the right edge, outside the scroll
   if (cur?.is_agent && state.sel.tab !== 'files') {
-    tabs.push(el('span', { class: 'work-mode viewtoggle' }, [
+    strip.push(el('span', { class: 'work-mode viewtoggle' }, [
       el('button', {
         class: `btn btn-seg${state.sel.tab === 'term' ? ' is-on' : ''}`, type: 'button',
         onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'term'),
@@ -319,7 +320,7 @@ function renderTabs() {
       }),
     ]));
   }
-  ui.paneTabs.replaceChildren(...tabs);
+  ui.paneTabs.replaceChildren(...strip);
 }
 
 function showPanel() {
@@ -603,8 +604,7 @@ function portChipLite(sock, hostMeta) {
   });
 }
 
-function renderCtxPorts() {
-  const panes = currentPanes();
+function collectPorts(panes) {
   const seen = new Set();
   const socks = [];
   for (const p of panes) {
@@ -613,8 +613,34 @@ function renderCtxPorts() {
       if (!seen.has(k)) { seen.add(k); socks.push({ sock, hostMeta: p.hostMeta }); }
     }
   }
+  return socks.sort((a, b) => a.sock.port - b.sock.port);
+}
+
+function renderCtxPorts() {
+  // the checkout's own ports first; when it has none, everything the host's
+  // herdr panes are listening on still shows (labelled), so the panel is
+  // reliably where you look for "what can I open"
+  let socks = collectPorts(currentPanes());
+  let fallback = false;
+  if (!socks.length && state.sel.host) {
+    const h = state.fleet?.hosts?.find((x) => x.name === state.sel.host);
+    const all = (h?.data?.panes || []).map((p) => ({ ...p, hostMeta: h }));
+    socks = collectPorts(all);
+    fallback = true;
+  }
   ui.ctxPorts.hidden = !socks.length;
-  ui.ctxPortList.replaceChildren(...socks.map(({ sock, hostMeta }) => portChipLite(sock, hostMeta)));
+  if (ui.ctxPorts.hidden) return;
+  const rows = socks.map(({ sock, hostMeta }) => el('div', { class: 'ctx-port-row' }, [
+    portChipLite(sock, hostMeta),
+    el('span', { class: 'ctx-port-proc', text: sock.process || '', title: `pid ${sock.pid}` }),
+  ]));
+  if (fallback) {
+    rows.unshift(el('div', {
+      class: 'ctx-hint',
+      text: `none in this checkout — everything on ${state.sel.host}:`,
+    }));
+  }
+  ui.ctxPortList.replaceChildren(...rows);
 }
 
 async function renderCtxViewsTunnels() {

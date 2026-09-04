@@ -106,6 +106,8 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     source: null,
     target: null,      // {host, pane}
     fontSize: 13,
+    autoFit: true,     // pick the font size that fills the box; A+/A- overrides
+    fitting: 0,        // re-measure guard: font changes need a layout pass
     pending: [],
     flushTimer: null,
     fitTimer: null,
@@ -156,18 +158,37 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     state.fitTimer = setTimeout(() => requestAnimationFrame(fit), 60);
   }
 
-  /** Panes are wider than the box; scale down rather than clip. */
+  /** Fill the available width by choosing the font size, not by CSS-scaling:
+      text stays crisp, the box height is honest, and reflows don't jump.
+      A transform scale-down remains only as a last resort at the minimum
+      font size. Manual A+/A- turns auto-fitting off until the next pane. */
   function fit() {
     const el = mount;
-    el.style.transform = 'none';
     const box = el.parentElement;
-    if (!box) return;
+    if (!box || !state.xterm) return;
     const pad = getComputedStyle(box);
     const avail = box.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
+    el.style.transform = 'none';
+    box.style.height = '';
     const natural = el.scrollWidth;
-    const scale = natural > avail && natural > 0 ? Math.max(0.4, avail / natural) : 1;
-    el.style.transform = `scale(${scale})`;
-    el.parentElement.style.height = `${el.scrollHeight * scale}px`;
+    if (!natural || avail <= 0) return;
+
+    if (state.autoFit) {
+      const want = Math.min(22, Math.max(8, Math.floor(state.fontSize * (avail / natural))));
+      if (want !== state.fontSize && state.fitting < 3) {
+        state.fitting += 1;   // measured width lags a font change by a frame
+        state.fontSize = want;
+        state.xterm.options.fontSize = want;
+        setTimeout(() => requestAnimationFrame(fit), 30);
+        return;
+      }
+    }
+    state.fitting = 0;
+    if (natural > avail) {  // minimum font still too wide: shrink visually
+      const scale = Math.max(0.4, avail / natural);
+      el.style.transform = `scale(${scale})`;
+      box.style.height = `${el.scrollHeight * scale}px`;
+    }
   }
 
   function onKey(data) {
@@ -208,6 +229,7 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
   function connect(target) {
     if (state.source) state.source.close();
     state.target = { host: target.host, pane: target.pane };
+    state.autoFit = true;  // a fresh pane goes back to filling the box
     const t = ensureTerm();
     t.options.theme = termIsDark() ? TERM_THEME_DARK : TERM_THEME_LIGHT;
     t.write('\x1b[2J\x1b[H\x1b[?25l');
@@ -249,6 +271,7 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
   }
 
   function setFont(size) {
+    state.autoFit = false;  // the user chose; stop second-guessing them
     state.fontSize = Math.min(22, Math.max(8, size));
     if (state.xterm) {
       state.xterm.options.fontSize = state.fontSize;
