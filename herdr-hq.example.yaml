@@ -17,7 +17,7 @@ poll:
 terminal:
   enabled: true
   input: true                 # allow typing into mirrored panes
-  interval: 0.25
+  interval: 0.06              # fastest mirror refresh; herdr coalesces output ~10 Hz
   max_sessions: 6
 
 events:

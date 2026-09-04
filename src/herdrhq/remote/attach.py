@@ -99,36 +99,56 @@ def screen_size(text: str) -> tuple[int, int]:
     return max(20, cols), max(4, len(lines))
 
 
-def read_loop(client: HerdrClient, pane_id: str, interval: float, stop: threading.Event) -> None:
-    last = None
-    misses = 0
-    failures = 0
-    while not stop.is_set():
+def open_subscription(path: str) -> tuple[socket.socket, "io.BufferedRWPair"]:
+    """A held connection streaming pane_updated events (revision bumps on
+    output change). Broadcast: fires for every pane; we filter to ours."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(0.3)
+    sock.connect(path)
+    fh = sock.makefile("rwb")
+    req = {"id": "hqsub", "method": "events.subscribe",
+           "params": {"subscriptions": [{"type": "pane.updated"}]}}
+    fh.write((json.dumps(req) + "\n").encode())
+    fh.flush()
+    # first framed reply is the subscription_started ack
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        line = fh.readline()
+        if not line:
+            raise ConnectionError("herdr closed before ack")
+        msg = json.loads(line)
+        if msg.get("id") == "hqsub":
+            if "error" in msg:
+                raise ApiError(str(msg["error"].get("message", msg["error"])))
+            return sock, fh
+    raise ConnectionError("no subscription ack")
+
+
+class _Reader:
+    """Reads the pane on demand, emitting a frame only when the screen text
+    changes. Keeps the last text so callers can just say 'read now'."""
+
+    def __init__(self, client: HerdrClient, pane_id: str):
+        self.client = client
+        self.pane_id = pane_id
+        self.last = None
+
+    def read_and_emit(self) -> bool | None:
+        """True on success, None on a transient failure, False on a fatal one."""
         try:
-            result = client.call(
+            result = self.client.call(
                 "pane.read",
-                {"pane_id": pane_id, "source": "visible", "format": "ansi", "strip_ansi": False},
+                {"pane_id": self.pane_id, "source": "visible",
+                 "format": "ansi", "strip_ansi": False},
             )
-            failures = 0
-        except ApiError as exc:
-            # a rejected request (unknown pane, closed pane) will not fix itself
+        except ApiError as exc:  # unknown/closed pane — won't fix itself
             emit({"t": "error", "message": str(exc)})
-            stop.set()
-            return
-        except (OSError, ValueError, ConnectionError) as exc:
-            failures += 1
-            if failures in (3, 30):
-                emit({"t": "error", "message": f"read failed: {exc}"})
-            if failures > 60:
-                emit({"t": "error", "message": f"giving up after {failures} failed reads: {exc}"})
-                stop.set()
-                return
-            stop.wait(min(2.0, interval * failures))
-            continue
+            return False
+        except (OSError, ValueError, ConnectionError):
+            return None
         text = (result.get("read") or {}).get("text", "")
-        if text != last:
-            last = text
-            misses = 0
+        if text != self.last:
+            self.last = text
             cols, rows = screen_size(text)
             emit({
                 "t": "screen",
@@ -136,11 +156,116 @@ def read_loop(client: HerdrClient, pane_id: str, interval: float, stop: threadin
                 "cols": cols,
                 "rows": rows,
             })
+        return True
+
+
+def read_loop(client: HerdrClient, pane_id: str, min_interval: float,
+              stop: threading.Event) -> None:
+    """Event-driven pane mirror: read the moment herdr reports output changed,
+    not on a fixed timer. herdr coalesces output to ~10 Hz internally, so this
+    tracks its true cadence (and idles silently) instead of the old 4 Hz poll,
+    which both lagged and wasted reads. A slow safety poll covers missed
+    events, dropped subscriptions, and pane exit; a keepalive idle frame keeps
+    the SSE pipe warm."""
+    reader = _Reader(client, pane_id)
+    min_interval = max(0.03, min_interval)  # cap the read rate; ~herdr's cadence
+    safety = 1.5   # forced read when quiet (missed event / liveness)
+    idle_after = 20.0
+
+    if reader.read_and_emit() is False:
+        stop.set()
+        return
+    last_read = time.monotonic()
+    last_change = last_read
+    dirty = False
+    failures = 0
+    sub_sock = sub_fh = None
+    backoff = 0.5
+
+    def do_read() -> bool:
+        nonlocal last_read, dirty, failures, last_change
+        r = reader.read_and_emit()
+        last_read = time.monotonic()
+        if r is False:
+            stop.set()
+            return False
+        if r is None:
+            failures += 1
+            if failures in (3, 30):
+                emit({"t": "error", "message": "read failed"})
+            if failures > 60:
+                emit({"t": "error", "message": "giving up after repeated read failures"})
+                stop.set()
+                return False
         else:
-            misses += 1
-            if misses % 60 == 0:
-                emit({"t": "idle"})  # keeps the SSE pipe warm through proxies
-        stop.wait(interval)
+            failures = 0
+            last_change = last_read
+        dirty = False
+        return True
+
+    try:
+        while not stop.is_set():
+            if sub_fh is None:
+                try:
+                    sub_sock, sub_fh = open_subscription(client.path)
+                    backoff = 0.5
+                except ApiError as exc:  # server refused the subscription
+                    emit({"t": "error", "message": f"event subscription refused: {exc}"})
+                    # degrade to timed polling rather than give up
+                    sub_fh = "poll"
+                except (OSError, ValueError, ConnectionError):
+                    stop.wait(min(backoff, 2.0))
+                    backoff = min(5.0, backoff * 2)
+                    continue
+
+            now = time.monotonic()
+            # read when dirty (rate-capped) or on the safety interval
+            if dirty and now - last_read >= min_interval:
+                if not do_read():
+                    return
+            elif now - last_read >= safety:
+                if not do_read():
+                    return
+                if now - last_change >= idle_after:
+                    emit({"t": "idle"})  # keeps the SSE pipe warm through proxies
+
+            if sub_fh == "poll":  # no subscription: fall back to timed reads
+                dirty = True
+                stop.wait(max(min_interval, 0.15))  # gentler without events
+                continue
+
+            try:
+                line = sub_fh.readline()
+            except socket.timeout:
+                continue  # quiet moment; loop re-checks the safety timer
+            except (OSError, ValueError):
+                sub_fh = None
+                continue
+            if not line:  # subscription closed
+                sub_fh = None
+                stop.wait(min(backoff, 2.0))
+                backoff = min(5.0, backoff * 2)
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "id" in msg:
+                continue  # the ack, already handled
+            data = msg.get("data") or {}
+            kind = msg.get("event")
+            if kind == "pane_updated" and (data.get("pane") or {}).get("pane_id") == pane_id:
+                dirty = True
+            elif kind in ("pane_exited", "pane_closed") and data.get("pane_id") == pane_id:
+                emit({"t": "error", "message": "pane exited"})
+                stop.set()
+                return
+    finally:
+        if sub_sock is not None:
+            try:
+                sub_sock.close()
+            except OSError:
+                pass
 
 
 def input_loop(client: HerdrClient, pane_id: str, stop: threading.Event) -> None:

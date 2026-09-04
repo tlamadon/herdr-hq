@@ -97,7 +97,7 @@ class Config:
     interval_when_live: float = 15.0  # poll cadence while the event bridge is up
     terminal_enabled: bool = True
     terminal_input: bool = True
-    terminal_interval: float = 0.25
+    terminal_interval: float = 0.06  # max mirror read cadence (herdr updates ~10 Hz)
     terminal_max_sessions: int = 6
     events_enabled: bool = True
     hosts: dict[str, HostSpec] = field(default_factory=dict)
