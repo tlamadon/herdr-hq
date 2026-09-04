@@ -106,6 +106,18 @@ function buildModel(fleet) {
   const byHost = {};
   for (const co of checkouts.values()) (byHost[co.host] ||= []).push(co);
 
+  // a checkout owns its herdr workspaces too: herdr groups related panes
+  // (workers, reviewers, shells) in one workspace even when their cwds
+  // wander, and all of them should be tabs
+  const wsCheckouts = new Map(); // `${host}|${workspace_id}` -> Set of checkouts
+  for (const row of collectAgents(fleet)) {
+    if (!row.git) continue;
+    const co = checkouts.get(`${row.host}|${row.git.toplevel}`);
+    const wk = `${row.host}|${row.workspace_id}`;
+    if (!wsCheckouts.has(wk)) wsCheckouts.set(wk, new Set());
+    wsCheckouts.get(wk).add(co);
+  }
+
   const machines = new Map();
   for (const host of fleet.hosts) {
     machines.set(host.name, {
@@ -119,10 +131,12 @@ function buildModel(fleet) {
         key: `${host.name}/${pane.pane_id}`,
         status: pane.agent_status || 'unknown',
       };
-      const owners = (byHost[host.name] || []).filter(
+      const owners = new Set(wsCheckouts.get(`${host.name}|${pane.workspace_id}`) || []);
+      const cwdMatch = (byHost[host.name] || []).filter(
         (co) => pane.cwd && (pane.cwd === co.top || pane.cwd.startsWith(`${co.top}/`)),
-      ).sort((a, b) => b.top.length - a.top.length);
-      if (owners.length) owners[0].panes.push(enriched);
+      ).sort((a, b) => b.top.length - a.top.length)[0];
+      if (cwdMatch) owners.add(cwdMatch);
+      if (owners.size) for (const co of owners) co.panes.push(enriched);
       else machines.get(host.name).panes.push(enriched);
     }
   }
@@ -295,6 +309,10 @@ function renderTabs() {
   }, [
     el('span', { class: `dot${p.status === 'working' ? ' is-live' : ''}`, 'data-status': p.is_agent ? p.status : 'unknown' }),
     el('span', { text: p.is_agent ? (p.agent || 'agent') : 'shell' }),
+    // a workspace sibling working another checkout wears its repo as a tag
+    p.git && state.sel.top && p.git.toplevel !== state.sel.top
+      ? el('span', { class: 'kindtag', text: p.git.repo_name, title: p.git.toplevel })
+      : null,
     el('span', { class: 'work-tab-id', text: p.pane_id }),
   ]));
   if (state.sel.host) {
