@@ -107,7 +107,6 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     target: null,      // {host, pane}
     fontSize: 13,
     autoFit: true,     // pick the font size that fills the box; A+/A- overrides
-    fitting: 0,        // re-measure guard: font changes need a layout pass
     pending: [],
     flushTimer: null,
     fitTimer: null,
@@ -160,35 +159,52 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
 
   /** Fill the available width by choosing the font size, not by CSS-scaling:
       text stays crisp, the box height is honest, and reflows don't jump.
-      A transform scale-down remains only as a last resort at the minimum
-      font size. Manual A+/A- turns auto-fitting off until the next pane. */
-  function fit() {
-    const el = mount;
-    const box = el.parentElement;
-    if (!box || !state.xterm) return;
-    const pad = getComputedStyle(box);
-    const avail = box.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
-    el.style.transform = 'none';
-    box.style.height = '';
-    const natural = el.scrollWidth;
-    if (!natural || avail <= 0) return;
+      The target font comes straight from the measured width-per-column —
+      one shot, no iteration, so racing frames can't thrash it. A transform
+      scale-down remains only as a last resort at the minimum font size.
+      Manual A+/A- turns auto-fitting off until the next pane. */
+  const MIN_AUTO_FONT = 10;  // below this the pane scrolls rather than shrinks
 
-    if (state.autoFit) {
-      const want = Math.min(22, Math.max(8, Math.floor(state.fontSize * (avail / natural))));
-      if (want !== state.fontSize && state.fitting < 3) {
-        state.fitting += 1;   // measured width lags a font change by a frame
-        state.fontSize = want;
-        state.xterm.options.fontSize = want;
-        setTimeout(() => requestAnimationFrame(fit), 30);
-        return;
-      }
+  function boxWidth() {
+    // the scroll container: unlike wrapper divs, its width never stretches
+    // with overflowing content, so this measurement is trustworthy
+    const box = mount.parentElement;
+    if (!box) return 0;
+    const pad = getComputedStyle(box);
+    return box.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
+  }
+
+  /** True on-screen width of the rendered grid. NOT mount.scrollWidth — the
+      canvas renderer's backing store carries a device-pixel width that leaks
+      into scrollWidth and reads far too wide. The .xterm-screen element is
+      the honest CSS width. */
+  function gridWidth() {
+    const screen = mount.querySelector('.xterm-screen');
+    return screen ? screen.clientWidth : 0;
+  }
+
+  /** Fill the width by choosing the font size for the pane's fixed column
+      count (herdr dictates cols; we can't reflow them). Font scales linearly
+      with rendered width, so one measurement gives the target directly — no
+      transform, no iteration. A very wide pane (many columns) bottoms out at
+      a readable floor and scrolls horizontally instead of shrinking to a
+      blur. Manual A+/A- turns auto-fitting off until the next pane. */
+  function fit() {
+    if (!state.autoFit || !state.xterm) return;
+    const avail = boxWidth();
+    const w = gridWidth();
+    if (!w || avail <= 0) return;
+    const want = Math.min(22, Math.max(MIN_AUTO_FONT, Math.round(state.fontSize * avail / w)));
+    if (want !== state.fontSize) {
+      state.fontSize = want;
+      state.xterm.options.fontSize = want;
     }
-    state.fitting = 0;
-    if (natural > avail) {  // minimum font still too wide: shrink visually
-      const scale = Math.max(0.4, avail / natural);
-      el.style.transform = `scale(${scale})`;
-      box.style.height = `${el.scrollHeight * scale}px`;
-    }
+  }
+
+  // layout transients (panels unhiding, columns settling, sidebars folding)
+  // resize the container without a window resize; refit whenever it moves
+  if (typeof ResizeObserver !== 'undefined' && mount.parentElement) {
+    new ResizeObserver(scheduleFit).observe(mount.parentElement);
   }
 
   function onKey(data) {

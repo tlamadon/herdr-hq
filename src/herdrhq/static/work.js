@@ -123,13 +123,18 @@ function buildModel(fleet) {
     machines.set(host.name, {
       host: host.name, hostMeta: host, panes: [], down: host.status !== 'ok',
     });
+    const tabLabels = {};
+    for (const t of host.data?.tabs || []) tabLabels[t.tab_id] = t.label;
     for (const pane of host.data?.panes || []) {
+      const label = tabLabels[pane.tab_id];
       const enriched = {
         ...pane,
         host: host.name,
         hostMeta: host,
         key: `${host.name}/${pane.pane_id}`,
         status: pane.agent_status || 'unknown',
+        // herdr's tab name, when someone (or the rename plugin) gave it one
+        tabLabel: label && !/^\d+$/.test(label) ? label : null,
       };
       const owners = new Set(wsCheckouts.get(`${host.name}|${pane.workspace_id}`) || []);
       const cwdMatch = (byHost[host.name] || []).filter(
@@ -227,7 +232,7 @@ function paneLeafRow(host, pane) {
     onclick: () => select(host, '', pane.pane_id, null),
   }, [
     el('span', { class: `dot${pane.status === 'working' ? ' is-live' : ''}`, 'data-status': pane.is_agent ? pane.status : 'unknown' }),
-    el('span', { class: 'tree-label', text: pane.is_agent ? (pane.title || pane.agent) : (pane.title || 'shell') }),
+    el('span', { class: 'tree-label', text: pane.tabLabel || pane.title || (pane.is_agent ? pane.agent : 'shell') }),
     el('span', { class: 'tree-host', text: pane.pane_id }),
   ]);
 }
@@ -308,12 +313,12 @@ function renderTabs() {
       state.sel.tab === 'files' ? 'term' : state.sel.tab),
   }, [
     el('span', { class: `dot${p.status === 'working' ? ' is-live' : ''}`, 'data-status': p.is_agent ? p.status : 'unknown' }),
-    el('span', { text: p.is_agent ? (p.agent || 'agent') : 'shell' }),
+    el('span', { text: p.tabLabel || (p.is_agent ? (p.agent || 'agent') : 'shell') }),
     // a workspace sibling working another checkout wears its repo as a tag
     p.git && state.sel.top && p.git.toplevel !== state.sel.top
       ? el('span', { class: 'kindtag', text: p.git.repo_name, title: p.git.toplevel })
       : null,
-    el('span', { class: 'work-tab-id', text: p.pane_id }),
+    el('span', { class: 'work-tab-id', text: p.tabLabel && p.is_agent ? `${p.agent} · ${p.pane_id}` : p.pane_id }),
   ]));
   if (state.sel.host) {
     tabs.push(el('button', {
@@ -355,7 +360,8 @@ function showPanel() {
     if (!target || target.host !== state.sel.host || target.pane !== state.sel.pane) {
       mirror.connect({ host: state.sel.host, pane: state.sel.pane });
     }
-    mirror.fit();
+    // the panel may have been unhidden this very tick; measure after layout
+    requestAnimationFrame(() => mirror.fit());
   } else {
     mirror.close();  // one terminal stream at a time; sessions survive on grace
   }
