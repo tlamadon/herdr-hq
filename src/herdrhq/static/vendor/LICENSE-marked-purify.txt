@@ -1,0 +1,6 @@
+marked v12.0.2 — https://github.com/markedjs/marked
+Copyright (c) 2011-2024, Christopher Jeffrey. MIT licensed.
+
+DOMPurify 3.1.6 — https://github.com/cure53/DOMPurify
+(c) Cure53 and other contributors. Released under the Apache License 2.0
+and Mozilla Public License 2.0 (dual license).

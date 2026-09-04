@@ -6,7 +6,7 @@
   <title>herdr HQ</title>
   <link rel="stylesheet" href="/static/vendor/xterm.css">
   <link rel="stylesheet" href="/static/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🐄</text></svg>">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 </head>
 <body>
   <header class="topbar">
@@ -14,6 +14,10 @@
       <span class="brand-mark" aria-hidden="true"></span>
       <h1>herdr HQ</h1>
     </div>
+    <nav class="topnav" aria-label="Sections">
+      <a href="/" class="is-here" aria-current="page">Dashboard</a>
+      <a href="/browse">Browse</a>
+    </nav>
     <div class="topbar-meta">
       <span id="liveState" class="live" data-state="pending">
         <span class="live-dot" aria-hidden="true"></span>
@@ -119,7 +123,10 @@
     </div>
   </div>
 
+  <div id="msg" role="status"></div>
+
   <script src="/static/vendor/xterm.js"></script>
+  <script src="/static/shared.js"></script>
   <script src="/static/term.js"></script>
   <script src="/static/app.js"></script>
 </body>

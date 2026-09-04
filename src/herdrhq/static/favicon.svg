@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- herdr HQ: three agent panes, one accent -->
+  <rect x="3"  y="5"  width="12" height="10" rx="2" fill="#2a78d6"/>
+  <rect x="17" y="5"  width="12" height="10" rx="2" fill="#898781"/>
+  <rect x="3"  y="17" width="12" height="10" rx="2" fill="#898781"/>
+  <rect x="17" y="17" width="12" height="10" rx="2" fill="#c3c2b7"/>
+</svg>

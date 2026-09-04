@@ -1,15 +1,4 @@
-/* herdr HQ dashboard */
-
-const STATUS_ORDER = ['working', 'blocked', 'idle', 'done', 'unknown'];
-const STATUS_LABEL = {
-  working: 'working',
-  blocked: 'blocked',
-  idle: 'idle',
-  done: 'done',
-  unknown: 'unknown',
-};
-// icon + label, so status never rides on colour alone
-const STATUS_ICON = { working: '▶', blocked: '!', done: '✓', idle: '○', unknown: '?' };
+/* herdr HQ dashboard (shared helpers live in shared.js) */
 
 const ui = {
   liveState: document.getElementById('liveState'),
@@ -41,62 +30,6 @@ const view = {
   timer: null,
   interval: 5000,
 };
-
-/* ------------------------------------------------------------- helpers */
-
-function el(tag, props = {}, children = []) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (v === null || v === undefined) continue;
-    if (k === 'class') node.className = v;
-    else if (k === 'text') node.textContent = v;
-    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
-    else node.setAttribute(k, v);
-  }
-  for (const child of [].concat(children)) {
-    if (child === null || child === undefined || child === false) continue;
-    node.append(child);
-  }
-  return node;
-}
-
-function bytes(n) {
-  if (!n) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let i = 0;
-  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
-  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
-}
-
-function pct(n) {
-  return `${(n ?? 0).toFixed(n >= 10 ? 0 : 1)}%`;
-}
-
-function duration(seconds) {
-  if (seconds === null || seconds === undefined) return '–';
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (d) return `${d}d ${h}h`;
-  if (h) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
-function ago(ts) {
-  if (!ts) return 'never';
-  const s = Math.max(0, Date.now() / 1000 - ts);
-  if (s < 60) return `${Math.round(s)}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  return `${Math.round(s / 3600)}h ago`;
-}
-
-/** Keep the tail of a path (the part that identifies the project) readable. */
-function shortPath(path, keep = 3) {
-  if (!path) return '';
-  const parts = path.split('/').filter(Boolean);
-  const tail = parts.slice(-keep).join('/');
-  return parts.length > keep ? `…/${tail}` : path;
-}
 
 /* Git presentation. Ahead/behind come from the local remote-tracking ref — the
    collector never fetches, so "behind" is as of that repo's last fetch. */
@@ -547,13 +480,6 @@ function renderProjects(agents) {
     : 'no repositories detected';
 }
 
-function statusPill(status) {
-  return el('span', { class: 'status-pill', 'data-status': status }, [
-    el('span', { class: `dot${status === 'working' ? ' is-live' : ''}`, 'data-status': status }),
-    el('span', { text: `${STATUS_ICON[status] || ''} ${STATUS_LABEL[status] || status}` }),
-  ]);
-}
-
 function terminalButton(row, label = '⌨') {
   if (!view.latest?.terminal?.enabled) return null;
   return el('button', {
@@ -569,6 +495,17 @@ function terminalButton(row, label = '⌨') {
       canInput: view.latest?.terminal?.input !== false,
     }),
   });
+}
+
+/** Jump to the browse view rooted at this agent's checkout (or cwd). */
+function filesButton(row) {
+  const dir = row.git?.toplevel || row.cwd;
+  if (!dir) return null;
+  return el('a', {
+    class: 'term-open files-open',
+    href: `/browse?${qs({ host: row.host, path: dir })}`,
+    title: `Browse files at ${dir}`,
+  }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { class: 'sr-only', text: 'files' })]);
 }
 
 function agentCard(row) {
@@ -594,6 +531,7 @@ function agentCard(row) {
       statusPill(row.status),
       row.focused ? el('span', { class: 'badge', text: 'focused' }) : null,
       el('span', { class: 'agent-kind', text: `${row.agent || 'agent'} · ${row.pane_id}` }),
+      filesButton(row),
       terminalButton(row),
     ]),
     el('div', { class: 'agent-title', text: row.title || row.workspace, title: row.title || '' }),
@@ -660,7 +598,10 @@ function renderTable(rows) {
       title: g ? dirtyText(g) : '',
     }),
     el('td', {}, (r.ports || []).map((s) => portChip(s, r.hostMeta))),
-    el('td', { class: 'path', text: r.cwd || '', title: r.cwd || '' }),
+    el('td', { class: 'path' }, r.cwd ? [el('a', {
+      href: `/browse?${qs({ host: r.host, path: r.git?.toplevel || r.cwd })}`,
+      title: `Browse files at ${r.cwd}`, text: r.cwd,
+    })] : []),
     el('td', { class: 'num', text: pct(r.usage?.cpu_pct) }),
     el('td', { class: 'num', text: bytes(r.usage?.rss) }),
     el('td', { class: 'num', text: String(r.usage?.proc_count ?? 0) }),
@@ -784,8 +725,7 @@ function readUrl() {
   if (p.get('termhost') && p.get('termpane')) {
     view.autoTerm = { host: p.get('termhost'), pane: p.get('termpane') };
   }
-  const theme = p.get('theme') || localStorage.getItem('herdr-hq-theme');
-  if (theme) document.documentElement.dataset.theme = theme;
+  initTheme();
   for (const btn of document.querySelectorAll('[data-view]')) {
     btn.classList.toggle('is-on', btn.dataset.view === view.mode);
   }
@@ -825,13 +765,7 @@ for (const btn of document.querySelectorAll('[data-view]')) {
   });
 }
 
-ui.themeToggle.addEventListener('click', () => {
-  const current = document.documentElement.dataset.theme
-    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  const next = current === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  localStorage.setItem('herdr-hq-theme', next);
-});
+bindThemeToggle(ui.themeToggle);
 
 readUrl();
 renderLegend();

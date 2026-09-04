@@ -122,6 +122,27 @@ How it's found, without root and without extra tooling:
 Limits: TCP only (no UDP), and on Linux only the network namespace the collector runs in —
 a port inside a container or a private netns won't appear.
 
+## Files and live views
+
+The **Browse** view (topbar) is a remote file manager over the same SSH connections the
+pollers use: pick a host chip — or type any `~/.ssh/config` alias — and walk its
+filesystem over SFTP. An **Agent workdirs** panel lists every checkout an agent is
+working in across the fleet, one click from its files; every agent card on the
+dashboard has a matching **🗀** button.
+
+Files open in a **live viewer** (`/view`) that re-renders in place whenever the remote
+file settles on a new `(mtime, size)` — a `latexmk` still mid-write never renders as
+garbage, and your scroll position survives every refresh:
+
+- **PDFs** render with a vendored pdf.js, with clickable hyperlinks and internal links.
+- **Markdown** renders with a vendored `marked`, sanitized through DOMPurify; relative
+  images and links inside a remote README resolve through the file API.
+- **Images** and **text/code/log files** render directly.
+
+Open live views are listed on the Browse page (with a cross-tab "Recent views"
+history), and **Tunnels** opens raw TCP forwards `127.0.0.1:<local> → host:<port>`
+through the pooled connection — they self-heal when a connection drops and reconnects.
+
 ## Configuring machines
 
 Configuration lives in `herdr-hq.yaml`, looked up as `$HERDRHQ_CONFIG`, then
@@ -248,6 +269,12 @@ browser logins survive container restarts.
 | `GET /api/term/stream?host=&pane=` | SSE stream of screen frames for one pane |
 | `POST /api/term/input` | `{host, pane, ops: [{text}\|{key}]}` — send keystrokes |
 | `POST /api/term/close` | `{host, pane}` — tear the mirror down now |
+| `GET /api/hosts` | configured + connected hosts, with agent counts |
+| `GET /api/fs/ls?host=&path=` | directory listing (path defaults to the remote home) |
+| `GET /api/fs/file?host=&path=` | stream file bytes (`&dl=1` forces download) |
+| `GET /api/fs/watch?host=&path=` | SSE: fires when `(mtime, size)` settles on a new value |
+| `GET /api/views` · `DELETE /api/views/{id}` | open live views; detach one |
+| `GET/POST /api/forwards` · `DELETE /api/forwards/{id}` | raw TCP tunnels |
 
 API calls authenticate with the session cookie, `Authorization: Bearer <secret>`, or a
 stateless `?token=<secret>` query parameter.

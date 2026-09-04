@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live view — herdr HQ</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body class="viewer-body">
+  <header class="viewer-head">
+    <span id="status" class="viewer-status" data-state="pending"></span>
+    <span id="statusLabel" class="viewer-status-label">connecting</span>
+    <span class="viewer-fname" id="fname"></span>
+    <span class="badge" id="hostchip"></span>
+    <a class="viewer-folder" id="folderLink" href="#" title="open the containing folder">🗀 folder</a>
+    <span class="viewer-spacer"></span>
+    <span id="meta" class="viewer-meta"></span>
+  </header>
+  <div id="scroll" class="viewer-scroll"><div class="pageset"><div class="note">loading…</div></div></div>
+
+  <script src="/static/shared.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script type="module" src="/static/viewer.js"></script>
+</body>
+</html>

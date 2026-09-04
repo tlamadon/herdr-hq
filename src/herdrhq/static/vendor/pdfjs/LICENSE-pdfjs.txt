@@ -1,0 +1,4 @@
+pdf.js 4.2.67 — https://mozilla.github.io/pdf.js/
+Copyright Mozilla Foundation. Licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+Full license text is embedded at the top of pdf.min.mjs and pdf.worker.min.mjs.
