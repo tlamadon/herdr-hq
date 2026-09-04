@@ -109,3 +109,84 @@ def test_real_transcript_parses():
     blob = files[-1].read_bytes()[-262144:]
     s = parse_claude_tail(blob)
     assert s.last_prompt or s.last_assistant or s.current_tool
+
+
+# ---------------------------------------------------------------- messages
+
+
+def test_parse_messages_conversation():
+    from herdrhq.transcript import parse_claude_messages
+
+    blob = jl(
+        {"type": "user", "message": {"content": "fix the bug"},
+         "timestamp": "2026-09-04T10:00:00Z"},
+        {"type": "assistant", "message": {"model": "claude-fable-5", "content": [
+            {"type": "text", "text": "Looking at it now."},
+        ]}, "timestamp": "2026-09-04T10:00:03Z"},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Read",
+             "input": {"file_path": "/repo/a.py"}},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "…"},
+        ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Found it: an off-by-one in `range`."},
+        ]}, "timestamp": "2026-09-04T10:00:09Z"},
+        {"type": "user", "message": {"content": "great, fix it"}},
+    )
+    msgs = parse_claude_messages(blob)
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert msgs[0]["text"] == "fix the bug"
+    a = msgs[1]  # one merged turn: text + tool + more text
+    assert a["text"] == "Looking at it now.\n\nFound it: an off-by-one in `range`."
+    assert a["tools"] == [{"name": "Read", "detail": "/repo/a.py"}]
+    assert a["model"] == "claude-fable-5"
+    assert msgs[2]["text"] == "great, fix it"
+
+
+def test_parse_messages_skips_noise_and_limits():
+    from herdrhq.transcript import parse_claude_messages
+
+    recs = [{"type": "user", "message": {"content": f"q{i}"}} for i in range(10)]
+    noise = [
+        {"type": "user", "isSidechain": True, "message": {"content": "sub"}},
+        {"type": "user", "isMeta": True, "message": {"content": "meta"}},
+        {"type": "user", "message": {"content": "<local-command-stdout>x</local-command-stdout>"}},
+        {"type": "system", "content": "sys"},
+        {"type": "ai-title", "aiTitle": "t"},
+    ]
+    msgs = parse_claude_messages(jl(*recs, *noise), limit=4)
+    assert [m["text"] for m in msgs] == ["q6", "q7", "q8", "q9"]
+
+
+def test_mentioned_files_order_and_dedupe():
+    from herdrhq.transcript import mentioned_files
+
+    def tool(path, key="file_path"):
+        return {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "x", "name": "Edit", "input": {key: path}},
+        ]}}
+
+    blob = jl(
+        tool("/repo/a.py"),
+        tool("/repo/b.py", key="notebook_path"),
+        tool("relative/nope.py"),      # not absolute: ignored
+        tool("/repo/a.py"),            # re-mention promotes to newest
+    )
+    assert mentioned_files(blob) == ["/repo/a.py", "/repo/b.py"]
+    assert mentioned_files(blob, cap=1) == ["/repo/a.py"]
+
+
+def test_messages_endpoint_degrades(tmp_path):
+    from starlette.testclient import TestClient
+
+    from herdrhq.app import create_app
+    from herdrhq.config import Config, HostSpec
+
+    cfg = Config(auth_enabled=False)
+    cfg.hosts["local"] = HostSpec(name="local", transport="local")
+    app = create_app(cfg)
+    client = TestClient(app, base_url="http://localhost")
+    assert client.get("/api/transcript/messages",
+                      params={"host": "nope", "pane": "x"}).status_code == 404

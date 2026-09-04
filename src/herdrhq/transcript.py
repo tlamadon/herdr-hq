@@ -21,7 +21,10 @@ from dataclasses import asdict, dataclass
 log = logging.getLogger("herdrhq.transcript")
 
 TAIL_BYTES = 256 * 1024
+CHAT_TAIL_BYTES = 512 * 1024
 SNIP = 400  # transcripts hold whole essays; cards need a line
+CHAT_LIMIT = 80  # messages served to the chat view
+FILES_CAP = 30
 
 
 def munge_cwd(cwd: str) -> str:
@@ -147,12 +150,117 @@ def parse_claude_tail(blob: bytes) -> Summary:
     return out
 
 
+def _iter_records(blob: bytes):
+    """Well-formed JSON records from a tail read, oldest first."""
+    lines = blob.split(b"\n")
+    if len(lines) > 1:
+        lines = lines[1:]  # the first line is almost surely cut mid-record
+    for raw in lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def parse_claude_messages(blob: bytes, limit: int = CHAT_LIMIT) -> list[dict]:
+    """The conversation as the chat view shows it, oldest first.
+
+    Sidechains, meta records, tool results and machinery types are skipped;
+    what remains is what the user asked, what the agent said (markdown, left
+    intact for the client to render), and which tools it called in between.
+    """
+    out: list[dict] = []
+    for rec in _iter_records(blob):
+        if rec.get("isSidechain") or rec.get("isMeta"):
+            continue
+        rtype = rec.get("type")
+        ts = rec.get("timestamp")
+        if rtype == "user":
+            content = (rec.get("message") or {}).get("content")
+            text = None
+            if isinstance(content, str):
+                if content and not content.startswith("<"):
+                    text = content
+            elif isinstance(content, list):
+                parts = [b.get("text") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+                if parts:
+                    text = "\n\n".join(parts)
+            if text:
+                out.append({"role": "user", "text": text, "ts": ts})
+        elif rtype == "assistant":
+            msg = rec.get("message") or {}
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            texts = []
+            tools = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text"):
+                    texts.append(block["text"])
+                elif block.get("type") == "tool_use":
+                    tools.append({
+                        "name": block.get("name") or "tool",
+                        "detail": _tool_detail(block.get("input")),
+                    })
+            if not texts and not tools:
+                continue
+            # transcripts write one record per streamed block, and tool results
+            # sit between them as (skipped) user records — consecutive
+            # assistant records are one logical turn, so merge them
+            if out and out[-1]["role"] == "assistant":
+                entry = out[-1]
+            else:
+                entry = {"role": "assistant", "ts": ts}
+                out.append(entry)
+            if texts:
+                entry["text"] = "\n\n".join(filter(None, [entry.get("text"), *texts]))
+            if tools:
+                entry["tools"] = (entry.get("tools") or []) + tools
+            if msg.get("model"):
+                entry["model"] = msg["model"]
+            entry["ts"] = ts or entry.get("ts")
+    return out[-limit:]
+
+
+_PATH_KEYS = ("file_path", "notebook_path", "path")
+
+
+def mentioned_files(blob: bytes, cap: int = FILES_CAP) -> list[str]:
+    """Absolute paths the agent touched via tools, newest first, deduped."""
+    seen: dict[str, None] = {}
+    for rec in _iter_records(blob):
+        if rec.get("type") != "assistant":
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+                continue
+            inp = block.get("input")
+            if not isinstance(inp, dict):
+                continue
+            for key in _PATH_KEYS:
+                v = inp.get(key)
+                if isinstance(v, str) and v.startswith("/"):
+                    seen.pop(v, None)  # re-mention moves it to the newest slot
+                    seen[v] = None
+    return list(reversed(list(seen)))[:cap]
+
+
 class TranscriptPeek:
     """Cached tail-parses, keyed by (host, path) and invalidated by stat."""
 
     def __init__(self, backend_for):
         self.backend_for = backend_for  # host -> LocalFs | SftpFs
         self.cache: dict[tuple[str, str], tuple[tuple, Summary]] = {}
+        self.chat_cache: dict[tuple[str, str], tuple[tuple, dict]] = {}
 
     async def summary(self, host: str, pane: dict) -> dict:
         path, reason = resolve_path(pane)
@@ -183,6 +291,37 @@ class TranscriptPeek:
             "size": stamp[1],
             **{k: v for k, v in asdict(summary).items() if v is not None},
         }
+
+    async def messages(self, host: str, pane: dict) -> dict:
+        """The chat view's payload: message list + files the agent touched."""
+        path, reason = resolve_path(pane)
+        if path is None:
+            return {"available": False, "reason": reason}
+        fs = self.backend_for(host)
+        try:
+            stamp = await fs.stat(path)
+        except Exception as e:  # noqa: BLE001 - a missing transcript is normal
+            return {"available": False, "reason": f"transcript unreadable: {e}", "path": path}
+        key = (host, path)
+        cached = self.chat_cache.get(key)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        try:
+            blob = await fs.read_tail(path, CHAT_TAIL_BYTES)
+        except Exception as e:  # noqa: BLE001
+            return {"available": False, "reason": f"transcript unreadable: {e}", "path": path}
+        payload = {
+            "available": True,
+            "path": path,
+            "mtime": stamp[0],
+            "size": stamp[1],
+            "messages": parse_claude_messages(blob),
+            "files": mentioned_files(blob),
+        }
+        self.chat_cache[key] = (stamp, payload)
+        if len(self.chat_cache) > 64:  # chat payloads are chunky; keep few
+            self.chat_cache.pop(next(iter(self.chat_cache)))
+        return payload
 
     async def enrich(self, poller) -> None:
         """Attach transcript summaries to a fresh poll's agent panes."""

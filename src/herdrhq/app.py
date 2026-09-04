@@ -206,17 +206,31 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=SSE_HEADERS)
 
-    async def transcript(request: Request) -> JSONResponse:
+    def _find_pane(request: Request):
         host = request.query_params.get("host") or ""
         pane_id = request.query_params.get("pane") or ""
         poller = fleet.by_name.get(host)
         if poller is None:
-            return err(f"unknown host {host!r}", 404)
+            return None, err(f"unknown host {host!r}", 404)
         panes = (poller.state.get("data") or {}).get("panes") or []
         pane = next((p for p in panes if p.get("pane_id") == pane_id), None)
         if pane is None:
-            return err(f"unknown pane {pane_id!r} on {host}", 404)
+            return None, err(f"unknown pane {pane_id!r} on {host}", 404)
+        return (host, pane), None
+
+    async def transcript(request: Request) -> JSONResponse:
+        found, failure = _find_pane(request)
+        if failure is not None:
+            return failure
+        host, pane = found
         return JSONResponse(await peek.summary(host, pane))
+
+    async def transcript_messages(request: Request) -> JSONResponse:
+        found, failure = _find_pane(request)
+        if failure is not None:
+            return failure
+        host, pane = found
+        return JSONResponse(await peek.messages(host, pane))
 
     def _ssh_target(host: str) -> str:
         """Resolve a UI host name to the pool's ssh destination."""
@@ -348,6 +362,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/state", state),
         Route("/api/state/stream", state_stream),
         Route("/api/transcript", transcript),
+        Route("/api/transcript/messages", transcript_messages),
         Route("/api/refresh", refresh, methods=["POST"]),
         Route("/api/term/stream", term_stream),
         Route("/api/term/input", term_input, methods=["POST"]),
