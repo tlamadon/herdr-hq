@@ -14,7 +14,7 @@ def test_ls_local(tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "a.txt").write_text("hello")
     (tmp_path / ".hidden").write_text("x")
-    client = TestClient(local_app())
+    client = TestClient(local_app(), base_url="http://localhost")
     r = client.get("/api/fs/ls", params={"host": "local", "path": str(tmp_path)})
     assert r.status_code == 200
     data = r.json()
@@ -28,7 +28,7 @@ def test_ls_local(tmp_path):
 
 
 def test_ls_missing_params():
-    client = TestClient(local_app())
+    client = TestClient(local_app(), base_url="http://localhost")
     assert client.get("/api/fs/ls").status_code == 400
     r = client.get("/api/fs/ls", params={"host": "local", "path": "/definitely/not/here"})
     assert r.status_code == 502
@@ -37,7 +37,7 @@ def test_ls_missing_params():
 def test_file_stream_and_download(tmp_path):
     p = tmp_path / "report.log"
     p.write_text("line1\nline2\n")
-    client = TestClient(local_app())
+    client = TestClient(local_app(), base_url="http://localhost")
     r = client.get("/api/fs/file", params={"host": "local", "path": str(p)})
     assert r.status_code == 200
     assert r.text == "line1\nline2\n"
@@ -50,7 +50,7 @@ def test_file_stream_and_download(tmp_path):
 def test_markdown_served_raw(tmp_path):
     p = tmp_path / "README.md"
     p.write_text("# hi")
-    client = TestClient(local_app())
+    client = TestClient(local_app(), base_url="http://localhost")
     r = client.get("/api/fs/file", params={"host": "local", "path": str(p)})
     assert r.headers["content-type"].startswith("text/markdown")
 
@@ -97,7 +97,7 @@ def test_watch_emits_init_then_detach(tmp_path):
 
 
 def test_hosts_endpoint():
-    client = TestClient(local_app())
+    client = TestClient(local_app(), base_url="http://localhost")
     r = client.get("/api/hosts")
     assert r.status_code == 200
     [h] = r.json()
@@ -107,7 +107,7 @@ def test_hosts_endpoint():
 
 
 def test_pages_served():
-    client = TestClient(local_app())
+    client = TestClient(local_app(), base_url="http://localhost")
     assert "Browse" in client.get("/browse").text
     assert "viewer" in client.get("/view").text
     assert client.get("/favicon.svg").status_code == 200

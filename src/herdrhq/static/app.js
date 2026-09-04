@@ -29,6 +29,8 @@ const view = {
   openPanes: new Set(),
   timer: null,
   interval: 5000,
+  proxied: new Map(),   // `${host}|${port}` -> preview URL from /api/preview
+  dupPorts: new Set(),  // `${repo}|${port}` bound in more than one checkout
 };
 
 /* Git presentation. Ahead/behind come from the local remote-tracking ref — the
@@ -93,25 +95,87 @@ function portHref(sock, host) {
   return `http://${hostAddress(host)}:${sock.port}/`;
 }
 
-function portChip(sock, host) {
-  const where = `${sock.addr}:${sock.port}`;
-  const href = portHref(sock, host);
-  const tip = href
-    ? `${sock.process} · ${where} · pid ${sock.pid}`
-    : `${sock.process} · ${where} · pid ${sock.pid} — loopback only on ${host?.name ?? 'that machine'}.\n`
-      + `Reach it with: ssh -L ${sock.port}:localhost:${sock.port} ${host?.target || host?.name || '<host>'}`;
-  const props = { class: `port-chip${href ? ' is-open' : ''}`, title: tip, text: `:${sock.port}` };
-  if (!href) return el('span', props);
-  return el('a', { ...props, href, target: '_blank', rel: 'noopener' });
+function wtLabel(sock, row) {
+  const g = row?.git;
+  if (!g || !view.dupPorts.has(`${g.repo_name}|${sock.port}`)) return null;
+  return el('span', { class: 'port-wt', text: g.worktree_name || branchName(g), title: g.toplevel });
 }
 
-function portsLine(ports, host, label = 'Listening') {
+function portChip(sock, host, row) {
+  const where = `${sock.addr}:${sock.port}`;
+  const info = `${sock.process} · ${where} · pid ${sock.pid}`;
+  const href = portHref(sock, host);
+  if (href) {
+    return el('a', {
+      class: 'port-chip is-open', title: info, text: `:${sock.port}`,
+      href, target: '_blank', rel: 'noopener',
+    }, [wtLabel(sock, row)]);
+  }
+  // Loopback-only on a remote machine: the herdr HQ proxy can still reach it.
+  const key = `${host?.name}|${sock.port}`;
+  const proxied = view.proxied.get(key);
+  if (proxied) {
+    return el('a', {
+      class: 'port-chip is-fwd',
+      title: `${info} — proxied through herdr HQ`,
+      href: proxied, target: '_blank', rel: 'noopener',
+    }, [el('span', { text: `:${sock.port}` }), el('span', { 'aria-hidden': 'true', text: ' ⇢' }), wtLabel(sock, row)]);
+  }
+  if (host?.name) {
+    return el('button', {
+      class: 'port-chip is-proxy', type: 'button',
+      title: `${info} — loopback only on ${host.name}. Click to open a live preview through the herdr HQ proxy.`,
+      onclick: async (ev) => {
+        const btn = ev.currentTarget;
+        btn.setAttribute('aria-busy', 'true');
+        btn.disabled = true;
+        try {
+          const r = await fetch('/api/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host: host.name, port: sock.port }),
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+          view.proxied.set(key, data.url);
+          window.open(data.url, '_blank');
+          render();
+        } catch (e) {
+          btn.removeAttribute('aria-busy');
+          btn.disabled = false;
+          toast(`preview :${sock.port} on ${host.name}: ${e.message}`);
+        }
+      },
+    }, [el('span', { text: `:${sock.port}` }), el('span', { 'aria-hidden': 'true', text: ' ▸' }), wtLabel(sock, row)]);
+  }
+  return el('span', { class: 'port-chip', title: info, text: `:${sock.port}` });
+}
+
+function portsLine(ports, host, label = 'Listening', row = null) {
   if (!ports || !ports.length) return null;
   return el('div', { class: 'ports-line' }, [
     el('span', { class: 'ports-label', text: label }),
     // project rollups mix machines, so each socket may carry its own host
-    ...ports.map((s) => portChip(s, s.hostMeta || host)),
+    ...ports.map((s) => portChip(s, s.hostMeta || host, s.row || row)),
   ]);
+}
+
+/** Ports bound by more than one checkout of the same repo need telling apart. */
+function computeDupPorts(agents) {
+  const seen = new Map();  // `${repo}|${port}` -> Set of toplevels
+  const dups = new Set();
+  for (const row of agents) {
+    const g = row.git;
+    if (!g) continue;
+    for (const sock of row.ports || []) {
+      const key = `${g.repo_name}|${sock.port}`;
+      const tops = seen.get(key) || new Set();
+      tops.add(g.toplevel);
+      seen.set(key, tops);
+      if (tops.size > 1) dups.add(key);
+    }
+  }
+  return dups;
 }
 
 function severity(p) {
@@ -236,7 +300,7 @@ function collectProjects(agents) {
     p.cpu += row.usage?.cpu_pct || 0;
     p.rss += row.usage?.rss || 0;
     for (const sock of row.ports || []) {
-      p.ports.set(`${row.host}|${sock.addr}:${sock.port}`, { ...sock, hostMeta: row.hostMeta });
+      p.ports.set(`${row.host}|${sock.addr}:${sock.port}`, { ...sock, hostMeta: row.hostMeta, row });
     }
     if (g) {
       // the main checkout and each linked worktree are separate working copies
@@ -537,7 +601,7 @@ function agentCard(row) {
     el('div', { class: 'agent-title', text: row.title || row.workspace, title: row.title || '' }),
     el('div', { class: 'agent-path', text: shortPath(row.cwd), title: row.cwd || '' }),
     gitLine(row.git),
-    portsLine(row.ports, row.hostMeta),
+    portsLine(row.ports, row.hostMeta, 'Listening', row),
     el('div', { class: 'agent-usage' }, [
       el('span', { class: 'usage-num' }, [
         el('b', { text: pct(u.cpu_pct) }), el('span', { text: ' cpu' }),
@@ -597,7 +661,7 @@ function renderTable(rows) {
       text: g ? (g.dirty ? `${dirtyCount(g)} changed` : 'clean') : '',
       title: g ? dirtyText(g) : '',
     }),
-    el('td', {}, (r.ports || []).map((s) => portChip(s, r.hostMeta))),
+    el('td', {}, (r.ports || []).map((s) => portChip(s, r.hostMeta, r))),
     el('td', { class: 'path' }, r.cwd ? [el('a', {
       href: `/browse?${qs({ host: r.host, path: r.git?.toplevel || r.cwd })}`,
       title: `Browse files at ${r.cwd}`, text: r.cwd,
@@ -650,6 +714,7 @@ function render() {
   const state = view.latest;
   if (!state) return;
   const agents = collectAgents(state);
+  view.dupPorts = computeDupPorts(agents);
   renderSummary(state, agents);
   renderHosts(state);
   renderProjects(agents);

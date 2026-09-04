@@ -104,13 +104,25 @@ Attribution reuses the same process trees as CPU and memory, so a port is credit
 pane whose shell is its ancestor. Agent cards show their own ports; each machine card
 shows **Pane ports**, which covers every herdr pane on that host, agent or not.
 
-A chip is a **link when the dashboard can actually reach it** — anything on the machine
-running the server, or a remote port bound past loopback. A remote port on `127.0.0.1`
-stays a plain chip, and its tooltip gives you the tunnel to open:
+A chip is a **link when the dashboard can actually reach it directly** — anything on
+the machine running the server, or a remote port bound past loopback. A remote port on
+`127.0.0.1` becomes a dashed **proxy chip**: one click opens
 
 ```
-ssh -L 8877:localhost:8877 buildbox
+http://p8877.<host>.localhost:8787/
 ```
+
+— a live preview of the remote app, reverse-proxied through the same pooled SSH
+connection, no declaration needed. Every service lives on its own `*.localhost`
+origin at path `/`, so apps that generate absolute paths (Jupyter, Grafana, Vite…)
+work unmodified, WebSockets included, and cookies stay isolated per app. Services can
+also be declared permanently per host in the config (`http: {jupyter: 8888}`) and then
+appear in the Browse view's Services panel. When two checkouts of the same repo bind
+the same port number, the chips carry the worktree/branch name to tell them apart.
+
+The proxy origins are covered by the same auth: service links carry a one-time token
+that sets each origin's cookie, and bookmarked service URLs bounce through the main
+origin to pick it up (`/__bless`).
 
 How it's found, without root and without extra tooling:
 
@@ -275,6 +287,8 @@ browser logins survive container restarts.
 | `GET /api/fs/watch?host=&path=` | SSE: fires when `(mtime, size)` settles on a new value |
 | `GET /api/views` · `DELETE /api/views/{id}` | open live views; detach one |
 | `GET/POST /api/forwards` · `DELETE /api/forwards/{id}` | raw TCP tunnels |
+| `GET /api/services` | declared HTTP services with their proxy URLs |
+| `POST /api/preview` | `{host, port}` → ad-hoc proxied preview URL |
 
 API calls authenticate with the session cookie, `Authorization: Bearer <secret>`, or a
 stateless `?token=<secret>` query parameter.

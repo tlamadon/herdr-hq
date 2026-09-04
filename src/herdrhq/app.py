@@ -19,6 +19,12 @@ DELETE /api/views/{id}      detach a live view (its tab closes itself)
 GET  /api/forwards          list raw TCP tunnels
 POST /api/forwards          {"host", "port", "remote_host"?, "local"?}
 DELETE /api/forwards/{id}   drop a tunnel
+GET  /api/services          declared HTTP services with their proxy URLs
+POST /api/preview           {"host", "port"} -> ad-hoc proxied preview URL
+GET  /__bless?to=           redirect to a service URL with ?hq_token= appended
+
+Plus the reverse proxy itself: http://<service>.<host>.localhost:<port>/ and
+http://p<port>.<host>.localhost:<port>/ relay to the remote app (see proxy.py).
 
 Everything is behind cookie/token auth (see auth.py) unless listen.auth is
 set to none.
@@ -33,12 +39,19 @@ import logging
 import mimetypes
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import asyncssh
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -47,6 +60,7 @@ from .config import Config
 from .files import FileRoutes
 from .fleet import Fleet
 from .pool import SSHPool
+from .proxy import TOKEN_PARAM, ProxyRouter, match_service, service_fid
 
 log = logging.getLogger("herdrhq.app")
 
@@ -85,6 +99,29 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
 
     async def favicon(request: Request) -> FileResponse:
         return FileResponse(STATIC / "favicon.svg")
+
+    async def bless(request: Request) -> Response:
+        """Grant this visitor's auth to a service origin.
+
+        Service origins (<service>.<host>.localhost) keep their own cookie
+        jars, so the proxy bounces unauthenticated browser visits here.
+        Reaching this handler means the visitor got past AuthGate on the main
+        origin; send them back with ?hq_token=... so the proxy sets that
+        origin's cookie. The target must be one of our own service URLs --
+        the token must not leak.
+        """
+        to = request.query_params.get("to") or ""
+        u = urlsplit(to)
+        if not (
+            u.scheme == "http"
+            and u.port == cfg.listen_port
+            and u.hostname
+            and match_service(cfg, u.hostname)
+        ):
+            return err("not a service URL of this herdr-hq", 400)
+        if secret:
+            to += ("&" if u.query else "?") + f"{TOKEN_PARAM}={secret}"
+        return RedirectResponse(to, status_code=303)
 
     # ------------------------------------------------------------------ api
 
@@ -189,6 +226,68 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         ok = await pool.remove_forward(host, fid)
         return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
 
+    def _service_url(host_name: str, service: str) -> str:
+        url = f"http://{service}.{host_name}.localhost:{cfg.listen_port}/"
+        if secret:
+            # Service origins have their own cookie jars; the token in the
+            # link blesses each one on first visit (proxy sets the cookie
+            # and redirects to the clean URL).
+            url += f"?{TOKEN_PARAM}={secret}"
+        return url
+
+    async def services(request: Request) -> JSONResponse:
+        out = []
+        for hs in cfg.hosts.values():
+            for s in hs.http:
+                if hs.transport == "local":
+                    up = True  # no forward needed; the port is already here
+                else:
+                    st = pool.peek_state(hs.ssh_target)
+                    f = st.forwards.get(service_fid(hs.name, s.name)) if st else None
+                    up = bool(st and not st.closed and f and f.local_port)
+                out.append({
+                    "name": s.name,
+                    "host": hs.name,
+                    "target": f"{s.remote_host}:{s.remote_port}",
+                    "url": _service_url(hs.name, s.name),
+                    "up": up,
+                })
+        return JSONResponse(out)
+
+    async def preview(request: Request) -> JSONResponse:
+        """Turn a discovered listening port into a proxied preview URL."""
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return err("body must be JSON", 400)
+        host = data.get("host")
+        try:
+            port = int(data.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        hs = cfg.hosts.get(host or "")
+        if hs is None:
+            return err(f"unknown host {host!r}", 400)
+        if not 0 < port < 65536:
+            return err("port must be 1-65535", 400)
+        service = f"p{port}"
+        local_port = port if hs.transport == "local" else None
+        if hs.transport != "local":
+            try:  # warm the forward so the first click is instant
+                f = await pool.add_forward(
+                    hs.ssh_target, port, "localhost",
+                    fid=service_fid(hs.name, service), internal=True,
+                )
+                local_port = f.local_port
+            except (OSError, asyncssh.Error, asyncio.TimeoutError) as e:
+                return err(e)
+        return JSONResponse({
+            "url": _service_url(hs.name, service),
+            "service": service,
+            "host": hs.name,
+            "local_port": local_port,
+        })
+
     async def term_close(request: Request) -> JSONResponse:
         try:
             body = await request.json()
@@ -202,6 +301,9 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/browse", browse),
         Route("/view", view),
         Route("/favicon.svg", favicon),
+        Route("/__bless", bless),
+        Route("/api/services", services),
+        Route("/api/preview", preview, methods=["POST"]),
         Route("/api/state", state),
         Route("/api/refresh", refresh, methods=["POST"]),
         Route("/api/term/stream", term_stream),
@@ -219,6 +321,36 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
 
+    async def _ensure_host(hs) -> None:
+        for t in hs.tunnels:
+            try:
+                await pool.add_forward(
+                    hs.ssh_target, t.remote_port, t.remote_host,
+                    desired_local=t.local, declared=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("tunnel %s:%s on %s: %s", t.remote_host, t.remote_port, hs.name, e)
+        for s in hs.http:
+            try:
+                await pool.add_forward(
+                    hs.ssh_target, s.remote_port, s.remote_host,
+                    fid=service_fid(hs.name, s.name), internal=True, declared=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("service %s on %s: %s", s.name, hs.name, e)
+
+    async def _ensure_loop() -> None:
+        """Keep declared tunnels and services alive; self-heals after drops."""
+        while True:
+            targets = [
+                hs for hs in cfg.hosts.values()
+                if hs.transport != "local" and (hs.tunnels or hs.http)
+            ]
+            if targets:
+                await asyncio.gather(*(_ensure_host(hs) for hs in targets),
+                                     return_exceptions=True)
+            await asyncio.sleep(20)
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette):
         if secret and not cfg.password:
@@ -231,15 +363,18 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         else:
             print("herdr-hq: auth disabled (listen.auth: none)", flush=True)
         fleet.start()
+        ensure_task = asyncio.create_task(_ensure_loop())
         yield
+        ensure_task.cancel()
         await fleet.stop()
+        await app.client.aclose()
         await pool.close()
 
     inner = Starlette(routes=routes, lifespan=lifespan)
     inner.state.cfg = cfg
     inner.state.pool = pool
     inner.state.fleet = fleet
-    app = AuthGate(inner, secret)
+    app = ProxyRouter(AuthGate(inner, secret), cfg, pool, secret=secret)
     app.fleet = fleet  # reachable from tests and __main__ regardless of wrapping
     app.cfg = cfg
     app.pool = pool
