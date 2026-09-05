@@ -638,7 +638,9 @@ def build(interval: float) -> dict:
     claimed: set[int] = set()
 
     # git state only for panes running an agent — that's what the dashboard shows
-    repos = collect_git([a.get("cwd") for a in snapshot.get("agents", [])])
+    # look up git for every pane's cwd, not just agents', so a plain shell
+    # sitting in a repo still reports which repo it's in (dedup'd per directory)
+    repos = collect_git([p.get("cwd") for p in snapshot.get("panes", [])])
 
     # resolve every pane's process tree first, so sockets can be looked up in one pass
     trees: dict[str, list[int]] = {}
@@ -682,7 +684,7 @@ def build(interval: float) -> dict:
                 "shell_pid": shell_pid,
                 "tty": info.get("tty"),
                 "foreground": fg,
-                "git": repos.get(pane.get("cwd")) if agent else None,
+                "git": repos.get(pane.get("cwd")),
                 "ports": ports_for(tree, sockets, procs),
                 "usage": usage_for(tree, procs),
             }

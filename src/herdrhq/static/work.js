@@ -87,8 +87,17 @@ const mirror = createMirror({
 /* ------------------------------------------------------------- the model */
 
 function buildModel(fleet) {
+  // every pane tagged with its host — checkouts form around any pane that sits
+  // in a repo, agent or not, so a repo with only shells still shows as a project
+  const rows = [];
+  for (const host of fleet.hosts || []) {
+    for (const pane of host.data?.panes || []) {
+      rows.push({ ...pane, host: host.name, hostMeta: host });
+    }
+  }
+
   const checkouts = new Map();
-  for (const row of collectAgents(fleet)) {
+  for (const row of rows) {
     if (!row.git) continue;
     const key = `${row.host}|${row.git.toplevel}`;
     if (!checkouts.has(key)) {
@@ -110,7 +119,7 @@ function buildModel(fleet) {
   // (workers, reviewers, shells) in one workspace even when their cwds
   // wander, and all of them should be tabs
   const wsCheckouts = new Map(); // `${host}|${workspace_id}` -> Set of checkouts
-  for (const row of collectAgents(fleet)) {
+  for (const row of rows) {
     if (!row.git) continue;
     const co = checkouts.get(`${row.host}|${row.git.toplevel}`);
     const wk = `${row.host}|${row.workspace_id}`;
