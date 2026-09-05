@@ -8,6 +8,26 @@
 
 const MD_TEXT_RE = /\.(md|markdown|txt|log|out|err|json|ya?ml|toml|csv|tsv|py|r|jl|js|ts|sh|zsh|bash|tex|bib|sty|cls|rst|org|nix|ini|cfg|conf|sql|lock|service)$/i;
 
+// The common highlight.js build ships without LaTeX; register a compact grammar
+// so .tex/.sty/.bib files (and ```latex blocks) get real highlighting: commands,
+// %-comments and $…$ math. Runs once, wherever md.js loads (viewer + chat).
+if (window.hljs && !window.hljs.getLanguage('latex')) {
+  window.hljs.registerLanguage('latex', (hljs) => {
+    const COMMAND = { className: 'keyword', begin: /\\[a-zA-Z@]+\*?/ };
+    return {
+      name: 'LaTeX',
+      aliases: ['tex'],
+      contains: [
+        hljs.COMMENT('%', '$'),
+        { className: 'built_in', begin: /\\(begin|end)\b/, end: /\}/, keywords: '', contains: [{ className: 'string', begin: /\{/, end: /\}/, excludeBegin: true, excludeEnd: true }] },
+        COMMAND,
+        { className: 'string', begin: /\$\$/, end: /\$\$/, contains: [COMMAND] },
+        { className: 'string', begin: /\$/, end: /\$/, contains: [COMMAND], illegal: /\n\s*\n/ },
+      ],
+    };
+  });
+}
+
 function renderMarkdown(text, { host, baseDir, version } = {}) {
   const body = el('div', { class: 'md-body' });
   body.innerHTML = DOMPurify.sanitize(marked.parse(text));

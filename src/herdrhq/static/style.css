@@ -684,13 +684,28 @@ body.is-modal { overflow: hidden; }
 }
 .note { color: var(--muted); font-size: 13px; padding: 30px; text-align: center; }
 
-.code-body {
-  width: min(calc(100% - 36px), 110ch); margin: 0;
+/* code viewer: line-number gutter + syntax-highlighted body, one frame. Gutter
+   and body share font-size/line-height/vertical padding so lines stay aligned;
+   only the body scrolls horizontally on long lines. */
+.code-view {
+  display: flex; margin: 0 auto; overflow: hidden;
+  width: min(calc(100% - 36px), 120ch);
   background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px 20px; overflow-x: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
-  line-height: 1.5; color: var(--ink); white-space: pre;
 }
+.code-gutter {
+  flex: none; margin: 0; padding: 14px 10px 14px 14px; text-align: right;
+  color: var(--muted); background: color-mix(in oklab, var(--surface-1) 55%, var(--border));
+  border-right: 1px solid var(--border); user-select: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  line-height: 1.55; white-space: pre;
+}
+.code-body {
+  flex: 1; min-width: 0; margin: 0; padding: 14px 16px; overflow-x: auto;
+  background: none; border: 0; border-radius: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  line-height: 1.55; color: var(--ink); white-space: pre;
+}
+.code-body code.hljs { display: block; background: none; padding: 0; }
 
 /* ------------------------------------------------------------ markdown */
 

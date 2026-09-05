@@ -145,13 +145,44 @@ async function renderMarkdownFile(url) {
   return `${bytes(text.length)} markdown`;
 }
 
+// file extension -> highlight.js language id (only for langs the build carries;
+// anything unmapped, e.g. LaTeX in a common build, falls back to auto-detect)
+const EXT_LANG = {
+  py: 'python', r: 'r', jl: 'julia', js: 'javascript', mjs: 'javascript', ts: 'typescript',
+  sh: 'bash', zsh: 'bash', bash: 'bash', json: 'json', yaml: 'yaml', yml: 'yaml',
+  toml: 'ini', ini: 'ini', cfg: 'ini', conf: 'ini', service: 'ini',
+  tex: 'latex', bib: 'latex', sty: 'latex', cls: 'latex',
+  rs: 'rust', go: 'go', c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp', java: 'java',
+  rb: 'ruby', lua: 'lua', sql: 'sql', nix: 'nix', css: 'css', scss: 'scss',
+  html: 'xml', xml: 'xml', md: 'markdown', diff: 'diff', patch: 'diff',
+};
+
 async function renderText(url) {
-  const text = await fetchText(url);
-  const pre = el('pre', { class: 'code-body' });
-  pre.textContent = text;
-  const next = el('div', { class: 'pageset' }, [pre]);
-  swap(next);
-  return `${text.split('\n').length} lines`;
+  const raw = await fetchText(url);
+  const src = raw.replace(/\n$/, '');  // drop one trailing newline — no phantom last line
+  const ext = (base.split('.').pop() || '').toLowerCase();
+  const want = EXT_LANG[ext];
+  let html = null;
+  let lang = 'text';
+  try {
+    if (want && window.hljs?.getLanguage(want)) {
+      html = hljs.highlight(src, { language: want, ignoreIllegals: true }).value;
+      lang = want;
+    } else if (window.hljs) {
+      const auto = hljs.highlightAuto(src);
+      html = auto.value;
+      lang = auto.language || 'text';
+    }
+  } catch (_) { html = null; lang = 'text'; }
+
+  const nLines = src.split('\n').length;
+  const gutter = el('pre', { class: 'code-gutter', 'aria-hidden': 'true' });
+  gutter.textContent = Array.from({ length: nLines }, (_, i) => i + 1).join('\n');
+  const code = el('code', { class: `hljs language-${lang}` });
+  if (html != null) code.innerHTML = html; else code.textContent = src;  // hljs output is escaped
+  const view = el('div', { class: 'code-view' }, [gutter, el('pre', { class: 'code-body' }, [code])]);
+  swap(el('div', { class: 'pageset' }, [view]));
+  return `${nLines} lines · ${lang}`;
 }
 
 async function renderPdf(url) {
