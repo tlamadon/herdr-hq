@@ -1,0 +1,32 @@
+nerd-symbols.woff2 — bundled icon glyphs for the terminal mirror
+================================================================
+
+This file is a SUBSET of "FiraCode Nerd Font Mono" containing only the
+icon glyphs (Unicode Private Use Area and related symbol ranges), so that
+Nerd Font icons used by shells, prompts and TUIs render in the browser
+terminal on any machine, whether or not a Nerd Font is installed locally.
+
+It is used as a fallback font: normal text still renders in the primary
+monospace font; only glyphs the primary font lacks fall through to this one.
+
+Sources & licenses
+------------------
+- Fira Code — Copyright (c) 2014, The Fira Code Project Authors
+  (https://github.com/tonsky/FiraCode). Licensed under the SIL Open Font
+  License, Version 1.1.
+- Nerd Fonts patch set — Copyright (c) 2014, Ryan L McIntyre
+  (https://github.com/ryanoasis/nerd-fonts). Licensed under the MIT License;
+  the bundled icon glyphs derive from upstream icon sets (Seti-UI, Devicons,
+  Font Awesome, Octicons, Material Design Icons, Powerline, Weather, etc.),
+  each under their own OFL/MIT/CC license.
+
+The SIL Open Font License (OFL-1.1) permits bundling and redistribution of
+the font (and subsets/derivatives) provided this notice is retained. Full
+license text: https://openfontlicense.org
+
+Regenerate this subset with:
+  pyftsubset FiraCodeNerdFontMono-Regular.ttf \
+    --unicodes="E000-F8FF,F0000-FFFFD,2500-259F,E0A0-E0D7" \
+    --flavor=woff2 --desubroutinize --no-hinting \
+    --layout-features='' --name-IDs='' --notdef-outline \
+    --output-file=nerd-symbols.woff2

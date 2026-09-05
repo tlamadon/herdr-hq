@@ -1,6 +1,18 @@
 /* herdr HQ — palette per the data-viz reference instance.
    Light surface #fcfcfb / dark surface #1a1a19; status colours are fixed. */
 
+/* Bundled Nerd Font icon glyphs (PUA subset of FiraCode Nerd Font Mono) so
+   shells/prompts/TUIs that use icons render everywhere, no local font needed.
+   Fallback only — normal text keeps the primary monospace; missing glyphs
+   (the icons) fall through to this. See vendor/fonts/LICENSE-nerd-symbols.txt */
+@font-face {
+  font-family: "Nerd Symbols";
+  src: url("/static/vendor/fonts/nerd-symbols.woff2") format("woff2");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
   --plane: #f9f9f7;

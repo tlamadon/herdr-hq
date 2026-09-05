@@ -139,7 +139,9 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     if (state.xterm) return state.xterm;
     state.xterm = new Terminal({
       fontSize: state.fontSize,
-      fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Monaco, monospace',
+      // "Nerd Symbols" (bundled, icons-only) sits late so text and box-drawing
+      // stay in the primary/system mono; only true icon glyphs fall through to it.
+      fontFamily: '"JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Monaco, "Nerd Symbols", monospace',
       fontWeight: 400,
       fontWeightBold: 600,
       lineHeight: 1.0,
