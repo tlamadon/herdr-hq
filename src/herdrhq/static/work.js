@@ -16,6 +16,8 @@ const ui = {
   machineTree: document.getElementById('machineTree'),
   workCrumb: document.getElementById('workCrumb'),
   paneTabs: document.getElementById('paneTabs'),
+  workModes: document.getElementById('workModes'),
+  termCtl: document.getElementById('termCtl'),
   termPanel: document.getElementById('termPanel'),
   termStatus: document.getElementById('termStatus'),
   workInput: document.getElementById('workInput'),
@@ -317,53 +319,51 @@ function select(host, top, pane, tab, { push = true } = {}) {
   loadCtx();
 }
 
-/** The slim header above the center: what you're looking at + mode toggle.
-    Pane selection now lives in the sidebar tree, not a tab strip. */
+/** Fill the single slim bar above the center: pane identity on the left, a
+    compact repo/branch context, then (in terminal mode) the terminal controls,
+    then the mode toggle. Pane selection lives in the sidebar tree. */
 function renderHeader() {
   const cur = currentPane();
   const co = state.sel.top
     ? state.model?.checkouts.get(`${state.sel.host}|${state.sel.top}`) : null;
 
-  ui.workCrumb.replaceChildren(...(state.sel.host ? [
-    el('strong', { text: co ? co.repo : state.sel.host }),
-    co ? el('span', { class: 'crumb-sub', text: ` ${co.git.branch || 'detached'}${co.git.worktree ? ' · worktree' : ''} @ ${co.host}` }) : null,
-    co?.git.dirty ? el('span', { class: 'git-dirty crumb-sub', text: ' · dirty' }) : null,
-    el('span', { class: 'crumb-path', text: filesRoot() || '' }),
-  ] : [el('span', { class: 'empty-hint', text: 'Pick a project, session or pane on the left.' })]).filter(Boolean));
+  if (!state.sel.host) {
+    ui.paneTabs.replaceChildren(el('span', { class: 'empty-hint', text: 'Pick a project, session or pane on the left.' }));
+    ui.workCrumb.replaceChildren();
+    ui.workModes.replaceChildren();
+    return;
+  }
 
-  if (!state.sel.host) { ui.paneTabs.replaceChildren(); return; }
-
-  const left = cur ? el('span', { class: 'work-pane-id' }, [
+  // identity — dot + label + (cross-repo tag) + pane id
+  ui.paneTabs.replaceChildren(...(cur ? [
     el('span', { class: `dot${cur.status === 'working' ? ' is-live' : ''}`, 'data-status': cur.is_agent ? cur.status : 'unknown' }),
-    el('span', { text: cur.tabLabel || (cur.is_agent ? (cur.agent || 'agent') : 'shell') }),
+    el('strong', { class: 'work-bar-label', text: cur.tabLabel || (cur.is_agent ? (cur.agent || 'agent') : 'shell') }),
     cur.git && state.sel.top && cur.git.toplevel !== state.sel.top
       ? el('span', { class: 'kindtag', text: cur.git.repo_name, title: cur.git.toplevel }) : null,
     el('span', { class: 'work-tab-id', text: cur.pane_id }),
-  ].filter(Boolean)) : el('span', { class: 'empty-hint', text: 'No pane selected.' });
+  ].filter(Boolean) : [el('span', { class: 'empty-hint', text: 'No pane selected.' })]));
 
-  const modes = el('div', { class: 'work-modes' });
+  // compact context — repo · branch @ host (+ dirty); the full path lives in Files
+  ui.workCrumb.replaceChildren(...[
+    el('span', { class: 'crumb-sub', text: co ? `${co.repo} · ${co.git.branch || 'detached'}${co.git.worktree ? ' ⌥' : ''} @ ${co.host}` : state.sel.host }),
+    co?.git.dirty ? el('span', { class: 'git-dirty crumb-sub', text: ' · dirty' }) : null,
+  ].filter(Boolean));
+
+  // mode toggle
+  const modes = [];
   if (cur?.is_agent) {
-    modes.append(el('span', { class: 'viewtoggle' }, [
-      el('button', {
-        class: `btn btn-seg${state.sel.tab === 'term' ? ' is-on' : ''}`, type: 'button',
-        onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'term'),
-        text: 'Terminal',
-      }),
-      el('button', {
-        class: `btn btn-seg${state.sel.tab === 'chat' ? ' is-on' : ''}`, type: 'button',
-        onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'chat'),
-        text: 'Chat',
-      }),
+    modes.push(el('span', { class: 'viewtoggle' }, [
+      el('button', { class: `btn btn-seg${state.sel.tab === 'term' ? ' is-on' : ''}`, type: 'button',
+        onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'term'), text: 'Terminal' }),
+      el('button', { class: `btn btn-seg${state.sel.tab === 'chat' ? ' is-on' : ''}`, type: 'button',
+        onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'chat'), text: 'Chat' }),
     ]));
   }
-  modes.append(el('button', {
+  modes.push(el('button', {
     class: `btn btn-seg files-btn${state.sel.tab === 'files' ? ' is-on' : ''}`, type: 'button',
     onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'files'),
   }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { text: ' Files' })]));
-
-  ui.paneTabs.replaceChildren(el('div', { class: 'work-header' }, [
-    left, el('span', { class: 'work-header-spacer' }), modes,
-  ]));
+  ui.workModes.replaceChildren(...modes);
 }
 
 function showPanel() {
@@ -371,6 +371,7 @@ function showPanel() {
   ui.termPanel.hidden = tab !== 'term';
   ui.chatPanel.hidden = tab !== 'chat';
   ui.filesPanel.hidden = tab !== 'files';
+  ui.termCtl.hidden = tab !== 'term';  // terminal controls only in terminal mode
 
   clearInterval(state.chat.timer);
   state.chat.timer = null;
@@ -827,6 +828,8 @@ ui.workInput.addEventListener('change', () => {
   else mirror.blur();
 });
 addEventListener('resize', () => { if (!ui.termPanel.hidden) mirror.fit(); });
+// leaving the page: release the pane now so herdr resizes it back promptly
+addEventListener('pagehide', () => mirror.close());
 window.addEventListener('popstate', () => {
   const u = readUrl();
   if (u.host) select(u.host, u.top || '', u.pane, u.tab, { push: false });

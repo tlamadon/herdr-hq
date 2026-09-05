@@ -37,22 +37,20 @@
     </nav>
 
     <main class="work-main">
-      <div class="work-crumb" id="workCrumb">
-        <span class="empty-hint">Pick a project, session or pane on the left.</span>
-      </div>
-      <div class="work-tabs" id="paneTabs"></div>
-
-      <section class="work-content" id="termPanel" hidden>
-        <div class="work-toolbar">
+      <div class="work-bar">
+        <span class="work-bar-id" id="paneTabs"><span class="empty-hint">Pick a project, session or pane on the left.</span></span>
+        <span class="work-bar-ctx" id="workCrumb"></span>
+        <span class="work-bar-spacer"></span>
+        <span class="term-ctl" id="termCtl">
           <span id="termStatus" class="term-status" data-state="connecting">connecting…</span>
-          <span class="work-toolbar-spacer"></span>
-          <label class="term-toggle">
-            <input type="checkbox" id="workInput" checked>
-            <span>Send keys</span>
-          </label>
+          <label class="term-toggle"><input type="checkbox" id="workInput" checked> <span>Send keys</span></label>
           <button class="btn btn-icon" id="workSmaller" type="button" aria-label="Smaller text">A−</button>
           <button class="btn btn-icon" id="workBigger" type="button" aria-label="Larger text">A+</button>
-        </div>
+        </span>
+        <span class="work-modes" id="workModes"></span>
+      </div>
+
+      <section class="work-content" id="termPanel" hidden>
         <div class="work-term"><div id="workMount" class="term-mount"></div></div>
         <div class="work-note" id="workNote"></div>
       </section>

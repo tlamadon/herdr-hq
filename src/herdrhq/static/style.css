@@ -847,37 +847,31 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
    width on .xterm), so the mirror stayed pinned at ~80 cols however wide the
    window got, instead of the fit growing to use the whole panel. */
 .work-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; width: 100%; }
-.work-crumb {
-  padding: 10px 18px 0; font-size: 13px; display: flex; align-items: baseline; gap: 4px;
-  white-space: nowrap; overflow: hidden;
+/* one slim bar for the whole center: identity · context · term-ctl · modes */
+.work-bar {
+  display: flex; align-items: center; gap: 10px; min-width: 0; flex: none;
+  padding: 5px 12px; border-bottom: 1px solid var(--grid);
 }
-.crumb-sub { color: var(--muted); font-size: 12px; }
-.crumb-path {
-  margin-left: auto; color: var(--muted); font-size: 11px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow: hidden; text-overflow: ellipsis;
+.work-bar-id {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: none;
+  color: var(--ink); font-size: 12.5px;
 }
-.work-tabs {
-  display: flex; align-items: center; padding: 0 18px;
-  border-bottom: 1px solid var(--grid); flex: none; min-width: 0;
+.work-bar-label {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 32ch;
 }
-.work-tabs:empty { display: none; }
-.work-header {
-  display: flex; align-items: center; gap: 12px; width: 100%; padding: 7px 0;
-  min-width: 0;
+.work-bar-ctx {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11.5px;
 }
-.work-header-spacer { flex: 1; min-width: 8px; }
-.work-pane-id {
-  display: inline-flex; align-items: center; gap: 7px; min-width: 0;
-  color: var(--ink); font-size: 12.5px; font-weight: 600;
-}
-.work-pane-id > span:not(.dot):not(.work-tab-id):not(.kindtag) {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.work-bar-spacer { flex: 1; min-width: 8px; }
+.crumb-sub { color: var(--muted); font-size: 11.5px; }
 .work-tab-id {
   color: var(--muted); font-size: 10.5px; font-weight: 400;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.term-ctl { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.term-ctl[hidden] { display: none; }
 .work-modes { display: flex; align-items: center; gap: 8px; flex: none; }
 .work-modes .btn-seg { font-size: 11.5px; padding: 4px 10px; }
 .work-modes .files-btn {
@@ -887,22 +881,18 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 
 .work-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .work-content[hidden] { display: none; }
-.work-toolbar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 18px; flex: none;
-}
-.work-toolbar-spacer { flex: 1; }
 /* a real terminal window: the terminal background fills the whole surface
    (not just the grid's max-content width), with breathing room and a subtle
    frame, so it reads as a window rather than floating text */
 .work-term {
-  flex: 1; overflow: hidden; margin: 8px 18px 14px; padding: 10px 12px;
+  flex: 1; overflow: hidden; margin: 6px 10px 8px; padding: 8px 10px;
   background: #161615;   /* the terminal is always dark (see termcore.js) */
   border: 1px solid var(--border); border-radius: 10px;
 }
 .work-term .xterm { padding: 0; }
 .work-term .xterm-viewport { background: transparent !important; }
-.work-note { padding: 6px 18px 10px; font-size: 11px; color: var(--muted); flex: none; }
+.work-note { padding: 4px 12px 8px; font-size: 11px; color: var(--muted); flex: none; }
+.work-note:empty { display: none; }
 
 /* chat */
 .chat-scroll { flex: 1; overflow-y: auto; min-height: 0; }

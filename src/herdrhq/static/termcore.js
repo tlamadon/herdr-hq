@@ -311,7 +311,24 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     };
   }
 
+  // Tell the server to drop a pane's session now, so herdr hands the pane's
+  // size straight back to whatever else is watching it — no 20s grace wait.
+  function releaseServer(target) {
+    if (!target) return;
+    fetch('/api/term/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: target.host, pane: target.pane }),
+      keepalive: true,
+    }).catch(() => { /* the grace reaper is the backstop */ });
+  }
+
   function connect(target) {
+    const prev = state.target;
+    // leaving one pane for another — release the old one right away
+    if (prev && (prev.host !== target.host || prev.pane !== target.pane)) {
+      releaseServer(prev);
+    }
     state.target = { host: target.host, pane: target.pane };
     const t = ensureTerm();
     t.options.theme = termTheme();
@@ -325,10 +342,11 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
   function close() {
     if (state.source) { state.source.close(); state.source = null; }
     if (state.target) {
-      navigator.sendBeacon?.(
-        '/api/term/close',
-        new Blob([JSON.stringify(state.target)], { type: 'application/json' }),
-      );
+      // sendBeacon survives the page unloading; fall back to fetch mid-session
+      const body = JSON.stringify(state.target);
+      if (!navigator.sendBeacon?.('/api/term/close', new Blob([body], { type: 'application/json' }))) {
+        releaseServer(state.target);
+      }
     }
     state.target = null;
   }
