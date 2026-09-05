@@ -830,7 +830,11 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .tree-row.is-selected .dot { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8); }
 .empty-hint { color: var(--muted); font-size: 12.5px; padding: 8px 10px; }
 
-.work-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+/* width:100% forces this grid item to fill its track — without it the flex
+   column shrink-wraps to the terminal's own pixel width (xterm sets a fixed
+   width on .xterm), so the mirror stayed pinned at ~80 cols however wide the
+   window got, instead of the fit growing to use the whole panel. */
+.work-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; width: 100%; }
 .work-crumb {
   padding: 10px 18px 0; font-size: 13px; display: flex; align-items: baseline; gap: 4px;
   white-space: nowrap; overflow: hidden;
