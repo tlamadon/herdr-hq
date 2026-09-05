@@ -161,6 +161,11 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     return state.xterm;
   }
 
+  // Each wheel notch is only ~3 lines, and every batch is a network round-trip
+  // to herdr, so 1:1 scrolling crawls. Amplify the line count so a notch moves
+  // a meaningful chunk — this is the knob to turn if scrolling feels off.
+  const SCROLL_SPEED = 3;
+
   /** xterm keeps no scrollback (herdr owns the history), so the wheel scrolls
       the pane's own viewport through the control stream. We use xterm's own
       wheel-intercept hook (a plain DOM listener gets swallowed by xterm) and
@@ -181,10 +186,10 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
         timer = setTimeout(() => {
           timer = null;
           const dir = accum < 0 ? 'up' : 'down';
-          const lines = Math.max(1, Math.min(200, Math.round(Math.abs(accum))));
+          const lines = Math.max(1, Math.min(200, Math.round(Math.abs(accum) * SCROLL_SPEED)));
           accum = 0;
           sendScroll(dir, lines);
-        }, 40);
+        }, 24);
       }
       return false;  // handled here; don't scroll the empty local buffer
     });
