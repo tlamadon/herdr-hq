@@ -806,10 +806,17 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .tree-row:hover { background: var(--surface-2); }
 .tree-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tree-parent .tree-label { font-weight: 600; }
-.tree-caret { color: var(--muted); width: 12px; flex: none; font-size: 10px; }
+.tree-caret {
+  color: var(--muted); width: 12px; flex: none; font-size: 10px;
+  border: 0; background: none; padding: 0; cursor: pointer; line-height: 1;
+}
+.tree-checkout { padding-left: 24px; }
+.tree-checkout .tree-label { font-weight: 500; }
 .tree-leaf { padding-left: 28px; }
-.tree-leaf.is-selected { background: var(--accent); color: #fff; }
-.tree-leaf.is-selected .tree-host { color: rgba(255, 255, 255, 0.75); }
+.tree-leaf-deep { padding-left: 46px; }
+.tree-row.is-selected { background: var(--accent); color: #fff; }
+.tree-row.is-selected .tree-host { color: rgba(255, 255, 255, 0.75); }
+.tree-row.is-selected .tree-caret { color: rgba(255, 255, 255, 0.75); }
 .tree-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -817,9 +824,10 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .tree-host { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); }
 .tree-extra { flex: none; font-size: 10.5px; color: var(--muted); }
 .tree-dots { display: inline-flex; gap: 4px; align-items: center; flex: none; margin-left: 4px; }
+.tree-checkout .tree-dots { margin-left: 0; }
 .tree-dot-group { display: inline-flex; gap: 2px; align-items: center; }
 .tree-dot-n { font-size: 10px; color: var(--muted); }
-.tree-leaf.is-selected .dot { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8); }
+.tree-row.is-selected .dot { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8); }
 .empty-hint { color: var(--muted); font-size: 12.5px; padding: 8px 10px; }
 
 .work-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -834,30 +842,32 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   overflow: hidden; text-overflow: ellipsis;
 }
 .work-tabs {
-  display: flex; align-items: center; gap: 12px; padding: 6px 18px 0;
+  display: flex; align-items: center; padding: 0 18px;
   border-bottom: 1px solid var(--grid); flex: none; min-width: 0;
 }
-.work-tab-scroll {
-  display: flex; align-items: stretch; gap: 2px;
-  overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: thin;
+.work-tabs:empty { display: none; }
+.work-header {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 7px 0;
+  min-width: 0;
 }
-.work-tab {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
-  background: none; border-radius: 0;
-  color: var(--muted); font: inherit; font-size: 12px; padding: 7px 10px 8px;
-  cursor: pointer; white-space: nowrap;
+.work-header-spacer { flex: 1; min-width: 8px; }
+.work-pane-id {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+  color: var(--ink); font-size: 12.5px; font-weight: 600;
 }
-.work-tab:hover { color: var(--ink); }
-.work-tab.is-active {
-  color: var(--ink); font-weight: 600;
-  border-bottom-color: var(--accent);
+.work-pane-id > span:not(.dot):not(.work-tab-id):not(.kindtag) {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.work-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.work-tab-id { color: var(--muted); font-size: 10.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.work-tab-files { border-left: 1px solid var(--grid); margin-left: 6px; padding-left: 14px; }
-.work-mode { flex: none; margin-bottom: 5px; }
-.work-mode .btn-seg { font-size: 11.5px; padding: 4px 10px; }
+.work-tab-id {
+  color: var(--muted); font-size: 10.5px; font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.work-modes { display: flex; align-items: center; gap: 8px; flex: none; }
+.work-modes .btn-seg { font-size: 11.5px; padding: 4px 10px; }
+.work-modes .files-btn {
+  border: 1px solid var(--border); border-radius: 8px;
+  display: inline-flex; align-items: center; gap: 2px;
+}
 
 .work-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .work-content[hidden] { display: none; }

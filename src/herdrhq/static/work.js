@@ -207,29 +207,46 @@ function caretRow({ id, label, extra, dots, children }) {
   return box;
 }
 
-function checkoutRow(co) {
-  const selected = state.sel.host === co.host && state.sel.top === co.top;
-  const label = [co.git.branch || 'detached', co.git.worktree ? '⌥' : null]
+/** A checkout node: its branch, expandable to the panes inside it. */
+function checkoutNode(co, only) {
+  const id = `co:${co.host}|${co.top}`;
+  const onThis = state.sel.host === co.host && state.sel.top === co.top;
+  const open = state.expanded.has(id) || onThis || only;
+  const label = [co.git.branch || 'detached', co.git.worktree ? '⌥' : '']
     .filter(Boolean).join(' ');
-  return el('button', {
-    class: `tree-row tree-leaf${selected ? ' is-selected' : ''}`,
-    type: 'button',
+  const caret = el('span', {
+    class: 'tree-caret', 'aria-hidden': 'true', text: open ? '▾' : '▸',
+    onclick: (ev) => {
+      ev.stopPropagation();
+      if (state.expanded.has(id)) state.expanded.delete(id);
+      else state.expanded.add(id);
+      renderSidebar();
+    },
+  });
+  const row = el('button', {
+    class: `tree-row tree-parent tree-checkout${onThis && !state.sel.pane ? ' is-selected' : ''}`,
+    type: 'button', 'aria-expanded': String(open),
     title: `${co.top} on ${co.host}`,
-    onclick: () => select(co.host, co.top, null, null),
+    onclick: () => { state.expanded.add(id); select(co.host, co.top, null, null); },
   }, [
+    only ? null : caret,
     el('span', { class: 'tree-label', text: label }),
     el('span', { class: 'tree-host', text: co.host }),
     statusDots(co.panes),
-  ]);
+  ].filter(Boolean));
+  const box = el('div', { class: 'tree-group' }, [row]);
+  if (open) box.append(...co.panes.map((p) => paneLeafRow(co.host, co.top, p, !only)));
+  return box;
 }
 
-function paneLeafRow(host, pane) {
-  const selected = state.sel.host === host && !state.sel.top && state.sel.pane === pane.pane_id;
+function paneLeafRow(host, top, pane, deep) {
+  const selected = state.sel.host === host && state.sel.top === top
+    && state.sel.pane === pane.pane_id;
   return el('button', {
-    class: `tree-row tree-leaf${selected ? ' is-selected' : ''}`,
+    class: `tree-row tree-leaf${deep ? ' tree-leaf-deep' : ''}${selected ? ' is-selected' : ''}`,
     type: 'button',
     title: pane.title || pane.pane_id,
-    onclick: () => select(host, '', pane.pane_id, null),
+    onclick: () => select(host, top, pane.pane_id, state.sel.tab === 'files' ? 'term' : null),
   }, [
     el('span', { class: `dot${pane.status === 'working' ? ' is-live' : ''}`, 'data-status': pane.is_agent ? pane.status : 'unknown' }),
     el('span', { class: 'tree-label', text: pane.tabLabel || pane.title || (pane.is_agent ? pane.agent : 'shell') }),
@@ -247,7 +264,7 @@ function renderSidebar() {
     label: repo,
     extra: cos.length > 1 ? `${cos.length}` : null,
     dots: statusDots(cos.flatMap((c) => c.panes)),
-    children: cos.map(checkoutRow),
+    children: cos.map((c) => checkoutNode(c, cos.length === 1)),
   })));
   if (!projects.length) {
     ui.projectTree.replaceChildren(el('div', { class: 'empty-hint', text: 'No agents in any repository.' }));
@@ -259,11 +276,11 @@ function renderSidebar() {
     label: m.host,
     extra: m.down ? 'unreachable' : (m.panes.length ? `${m.panes.length}` : null),
     dots: statusDots(m.panes),
-    children: m.panes.map((p) => paneLeafRow(m.host, p)),
+    children: m.panes.map((p) => paneLeafRow(m.host, '', p, false)),
   })));
 }
 
-/* ------------------------------------------------------ selection + tabs */
+/* --------------------------------------------------- selection + header */
 
 function select(host, top, pane, tab, { push = true } = {}) {
   const changedTarget = host !== state.sel.host || top !== state.sel.top;
@@ -286,13 +303,14 @@ function select(host, top, pane, tab, { push = true } = {}) {
   }
   if (push) writeUrl();
   renderSidebar();
-  renderTabs();
+  renderHeader();
   showPanel();
   loadCtx();
 }
 
-function renderTabs() {
-  const panes = currentPanes();
+/** The slim header above the center: what you're looking at + mode toggle.
+    Pane selection now lives in the sidebar tree, not a tab strip. */
+function renderHeader() {
   const cur = currentPane();
   const co = state.sel.top
     ? state.model?.checkouts.get(`${state.sel.host}|${state.sel.top}`) : null;
@@ -302,35 +320,21 @@ function renderTabs() {
     co ? el('span', { class: 'crumb-sub', text: ` ${co.git.branch || 'detached'}${co.git.worktree ? ' · worktree' : ''} @ ${co.host}` }) : null,
     co?.git.dirty ? el('span', { class: 'git-dirty crumb-sub', text: ' · dirty' }) : null,
     el('span', { class: 'crumb-path', text: filesRoot() || '' }),
-  ] : [el('span', { class: 'empty-hint', text: 'Pick a project or machine on the left.' })]).filter(Boolean));
+  ] : [el('span', { class: 'empty-hint', text: 'Pick a project, session or pane on the left.' })]).filter(Boolean));
 
-  const tabs = panes.map((p) => el('button', {
-    class: `work-tab${p.pane_id === state.sel.pane && state.sel.tab !== 'files' ? ' is-active' : ''}`,
-    type: 'button',
-    role: 'tab',
-    title: `${p.title || ''} (${p.pane_id})`,
-    onclick: () => select(state.sel.host, state.sel.top, p.pane_id,
-      state.sel.tab === 'files' ? 'term' : state.sel.tab),
-  }, [
-    el('span', { class: `dot${p.status === 'working' ? ' is-live' : ''}`, 'data-status': p.is_agent ? p.status : 'unknown' }),
-    el('span', { text: p.tabLabel || (p.is_agent ? (p.agent || 'agent') : 'shell') }),
-    // a workspace sibling working another checkout wears its repo as a tag
-    p.git && state.sel.top && p.git.toplevel !== state.sel.top
-      ? el('span', { class: 'kindtag', text: p.git.repo_name, title: p.git.toplevel })
-      : null,
-    el('span', { class: 'work-tab-id', text: p.tabLabel && p.is_agent ? `${p.agent} · ${p.pane_id}` : p.pane_id }),
-  ]));
-  if (state.sel.host) {
-    tabs.push(el('button', {
-      class: `work-tab work-tab-files${state.sel.tab === 'files' ? ' is-active' : ''}`,
-      type: 'button', role: 'tab',
-      onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'files'),
-    }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { text: 'Files' })]));
-  }
-  const strip = [el('div', { class: 'work-tab-scroll' }, tabs)];
-  // the Terminal ⇄ Chat toggle sits fixed at the right edge, outside the scroll
-  if (cur?.is_agent && state.sel.tab !== 'files') {
-    strip.push(el('span', { class: 'work-mode viewtoggle' }, [
+  if (!state.sel.host) { ui.paneTabs.replaceChildren(); return; }
+
+  const left = cur ? el('span', { class: 'work-pane-id' }, [
+    el('span', { class: `dot${cur.status === 'working' ? ' is-live' : ''}`, 'data-status': cur.is_agent ? cur.status : 'unknown' }),
+    el('span', { text: cur.tabLabel || (cur.is_agent ? (cur.agent || 'agent') : 'shell') }),
+    cur.git && state.sel.top && cur.git.toplevel !== state.sel.top
+      ? el('span', { class: 'kindtag', text: cur.git.repo_name, title: cur.git.toplevel }) : null,
+    el('span', { class: 'work-tab-id', text: cur.pane_id }),
+  ].filter(Boolean)) : el('span', { class: 'empty-hint', text: 'No pane selected.' });
+
+  const modes = el('div', { class: 'work-modes' });
+  if (cur?.is_agent) {
+    modes.append(el('span', { class: 'viewtoggle' }, [
       el('button', {
         class: `btn btn-seg${state.sel.tab === 'term' ? ' is-on' : ''}`, type: 'button',
         onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'term'),
@@ -343,7 +347,14 @@ function renderTabs() {
       }),
     ]));
   }
-  ui.paneTabs.replaceChildren(...strip);
+  modes.append(el('button', {
+    class: `btn btn-seg files-btn${state.sel.tab === 'files' ? ' is-on' : ''}`, type: 'button',
+    onclick: () => select(state.sel.host, state.sel.top, state.sel.pane, 'files'),
+  }, [el('span', { 'aria-hidden': 'true', text: '🗀' }), el('span', { text: ' Files' })]));
+
+  ui.paneTabs.replaceChildren(el('div', { class: 'work-header' }, [
+    left, el('span', { class: 'work-header-spacer' }), modes,
+  ]));
 }
 
 function showPanel() {
@@ -740,7 +751,7 @@ async function fetchState() {
   }
   // selection kept: refresh what depends on the model
   renderSidebar();
-  renderTabs();
+  renderHeader();
   renderCtxPorts();
 }
 
@@ -766,7 +777,7 @@ function connectPush() {
           state.renderTimer = null;
           state.model = buildModel(state.fleet);
           renderSidebar();
-          renderTabs();
+          renderHeader();
         }, 300);
       }
     } else if (msg.type === 'host') {
