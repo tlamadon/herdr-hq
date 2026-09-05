@@ -157,12 +157,53 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     state.xterm.loadAddon(state.fit);
     state.xterm.open(mount);
     state.xterm.onData(onKey);
+    attachWheel();
     return state.xterm;
   }
 
+  /** xterm keeps no scrollback (herdr owns the history), so the wheel scrolls
+      the pane's own viewport through the control stream. We use xterm's own
+      wheel-intercept hook (a plain DOM listener gets swallowed by xterm) and
+      return false so it doesn't try to scroll its empty local buffer. Deltas
+      are coalesced into one scroll request. */
+  function attachWheel() {
+    const t = state.xterm;
+    if (!t || !t.attachCustomWheelEventHandler) return;
+    let accum = 0;
+    let timer = null;
+    t.attachCustomWheelEventHandler((ev) => {
+      if (!state.target) return true;  // not connected — let xterm have it
+      const unit = ev.deltaMode === 1 ? 1
+        : ev.deltaMode === 2 ? (t.rows || 24)
+        : 1 / 24;  // pixels → rough lines
+      accum += ev.deltaY * unit;
+      if (!timer) {
+        timer = setTimeout(() => {
+          timer = null;
+          const dir = accum < 0 ? 'up' : 'down';
+          const lines = Math.max(1, Math.min(200, Math.round(Math.abs(accum))));
+          accum = 0;
+          sendScroll(dir, lines);
+        }, 40);
+      }
+      return false;  // handled here; don't scroll the empty local buffer
+    });
+  }
+
+  async function sendScroll(dir, lines) {
+    if (!state.target) return;
+    try {
+      await fetch('/api/term/scroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...state.target, dir, lines }),
+      });
+    } catch (_) { /* scrolling back is best-effort */ }
+  }
+
   /** Size the grid to the container (FitAddon), and if the fitted column/row
-      count changed materially, re-request the observe stream at the new size —
-      herdr renders the pane to whatever size we ask for, so the grid always
+      count changed materially, re-request the control stream at the new size —
+      herdr resizes the pane to whatever size we ask for, so the grid always
       fills the panel exactly, no CSS scaling, no clipping. */
   function fit() {
     if (!state.xterm || !state.fit) return;

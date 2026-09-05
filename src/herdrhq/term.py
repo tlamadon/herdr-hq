@@ -128,6 +128,17 @@ class TerminalSession:
         except (OSError, ValueError, asyncssh.Error) as exc:
             raise RuntimeError(f"terminal not writable: {exc}") from exc
 
+    async def send_scroll(self, direction: str, lines: int) -> None:
+        """Scroll the pane's own viewport (its real scrollback) via the control
+        stream; the browser keeps no local scroll log, so this is the history."""
+        if self.closed:
+            return
+        msg = {"t": "scroll", "dir": "up" if direction == "up" else "down", "lines": lines}
+        try:
+            await self.proc.send((json.dumps(msg) + "\n").encode())
+        except (OSError, ValueError, asyncssh.Error) as exc:
+            raise RuntimeError(f"terminal not writable: {exc}") from exc
+
     def close(self) -> None:
         self.closed = True
         if self._pump_task:

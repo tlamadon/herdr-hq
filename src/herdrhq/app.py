@@ -10,6 +10,7 @@ GET  /api/state             full fleet JSON (same shape as herdr-hq 0.1)
 POST /api/refresh           wake every poller now
 GET  /api/term/stream?host=&pane=   SSE mirror of one pane
 POST /api/term/input        {"host", "pane", "ops": [{"text"}|{"key"}]}
+POST /api/term/scroll       {"host", "pane", "dir": "up"|"down", "lines": N}
 POST /api/term/close        {"host", "pane"}
 GET  /api/hosts             configured + connected hosts (for the browse view)
 GET  /api/fs/ls?host=&path=     directory listing (path defaults to remote home)
@@ -199,6 +200,25 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
             return err(str(exc), 400)
         return JSONResponse({"ok": True})
 
+    async def term_scroll(request: Request) -> JSONResponse:
+        """Scroll the pane's viewport. Not gated on terminal_input — reading back
+        through history is harmless even when typing is disabled."""
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return err("body must be JSON", 400)
+        direction = "up" if body.get("dir") == "up" else "down"
+        try:
+            lines = max(1, min(200, int(body.get("lines", 3))))
+        except (TypeError, ValueError):
+            lines = 3
+        try:
+            session = await fleet.terminal(body.get("host", ""), body.get("pane", ""))
+            await session.send_scroll(direction, lines)
+        except (PermissionError, KeyError, RuntimeError, OSError, asyncio.TimeoutError) as exc:
+            return err(str(exc), 400)
+        return JSONResponse({"ok": True})
+
     async def state_stream(request: Request) -> Response:
         """SSE push channel: pane patches, poll completions, bridge health."""
 
@@ -379,6 +399,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/refresh", refresh, methods=["POST"]),
         Route("/api/term/stream", term_stream),
         Route("/api/term/input", term_input, methods=["POST"]),
+        Route("/api/term/scroll", term_scroll, methods=["POST"]),
         Route("/api/term/close", term_close, methods=["POST"]),
         Route("/api/hosts", files.hosts),
         Route("/api/fs/ls", files.ls),
