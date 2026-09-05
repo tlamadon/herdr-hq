@@ -2,31 +2,31 @@
 """Mirror one herdr pane over stdout, and forward keystrokes from stdin.
 
 Runs on the machine that owns the pane; the dashboard pipes it there over ssh
-exactly like collector.py. It speaks herdr's unix socket directly (newline
-delimited JSON) because the CLI has no streaming mode.
+exactly like collector.py.
 
-herdr publishes no raw output stream, so this polls `pane.read` for the visible
-screen (ANSI intact) and emits a frame whenever the screen changes. The poll is
-adaptive — fast while output is moving, relaxed when the screen is still —
-because pane.read answers in under a millisecond and the buffer reflects output
-within a few ms, far quicker than herdr's ~10 Hz change *events*. Input is
-forwarded verbatim with `pane.send_input`.
+Output uses herdr's own per-pane terminal stream: `herdr terminal session
+observe <pane> --cols --rows` emits terminal frames (raw ANSI, full repaints +
+diffs) on stdout as one JSON object per line. We relay each frame; the browser
+writes its bytes straight into xterm.js, so the cursor, colours and
+synchronized-output all render correctly and updates arrive as herdr produces
+them — no polling, no screen scraping. Input is still sent through the socket
+API with `pane.send_input` (observe is read-only, and this avoids taking an
+exclusive control lock on a pane the user may be driving themselves).
 
 Protocol, one JSON object per line each way:
 
-    out  {"t":"screen","text":<base64 of the ANSI screen>,"cols":N,"rows":N}
-    out  {"t":"error","message":"..."}
-    in   {"t":"input","text":"ls\\r"}
+    out  {"t":"frame","full":bool,"cols":N,"rows":N,"seq":N,"bytes":<base64 ANSI>}
+    out  {"t":"closed","message":"..."} / {"t":"error","message":"..."}
+    in   {"t":"input","ops":[{"text":"ls"},{"key":"Enter"}]}
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
-import re
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -35,8 +35,14 @@ SOCKET_CANDIDATES = [
     "~/.config/herdr/herdr.sock",
     "~/.herdr/herdr.sock",
 ]
-
-ANSI_RE = re.compile(r"\x1b\[[0-9;:?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+BIN_CANDIDATES = [
+    "/opt/homebrew/bin/herdr",
+    "/usr/local/bin/herdr",
+    "~/.local/bin/herdr",
+    "~/.nix-profile/bin/herdr",
+    "/run/current-system/sw/bin/herdr",
+    "/nix/var/nix/profiles/default/bin/herdr",
+]
 
 
 def emit(obj: dict) -> None:
@@ -49,6 +55,18 @@ def socket_path(explicit: str | None) -> str | None:
         path = os.path.expanduser(cand)
         if os.path.exists(path):
             return path
+    return None
+
+
+def find_herdr(explicit: str | None) -> str | None:
+    import shutil
+
+    env_bin = os.environ.get("HERDR_BIN_PATH")
+    for path in filter(None, [explicit, env_bin, "herdr", *BIN_CANDIDATES]):
+        path = os.path.expanduser(path)
+        found = shutil.which(path) if os.sep not in path else (path if os.access(path, os.X_OK) else None)
+        if found:
+            return found
     return None
 
 
@@ -91,80 +109,71 @@ class HerdrClient:
             except OSError:
                 pass
 
-    def close(self) -> None:
-        return None
 
-
-def screen_size(text: str) -> tuple[int, int]:
-    """Visible dimensions of the frame, ignoring escape sequences."""
-    lines = text.split("\n")
-    cols = max((len(ANSI_RE.sub("", line).rstrip("\r")) for line in lines), default=80)
-    return max(20, cols), max(4, len(lines))
-
-
-def read_loop(client: HerdrClient, pane_id: str, active_interval: float,
-              stop: threading.Event) -> None:
-    """Adaptive-polling pane mirror.
-
-    herdr's pane.read is essentially free — it answers in <1 ms and its
-    screen buffer reflects output within ~6 ms — but its pane_updated *events*
-    are throttled to ~10 Hz. So we don't wait for events: we poll pane.read
-    fast while output is moving (echo lands within one fast tick, near a real
-    ssh terminal) and back off when the screen is quiet, so an idle pane costs
-    almost nothing. A frame is emitted only when the screen text changes.
-    """
-    active_interval = max(0.015, active_interval)  # fast tick while typing/output
-    idle_interval = 0.15                            # relaxed when the screen is still
-    hot_window = 0.6                                # stay fast this long after a change
-    idle_keepalive = 20.0
-
-    last = None
+def observe_loop(binary: str, pane_id: str, cols: int, rows: int,
+                 env: dict, stop: threading.Event) -> None:
+    """Relay `herdr terminal session observe` frames to stdout, restarting the
+    stream if it drops (the pane closing ends us for good)."""
+    cmd = [binary, "terminal", "session", "observe", pane_id,
+           "--cols", str(cols), "--rows", str(rows)]
     failures = 0
-    hot_until = 0.0
-    last_change = time.monotonic()
-
     while not stop.is_set():
-        now = time.monotonic()
         try:
-            result = client.call(
-                "pane.read",
-                {"pane_id": pane_id, "source": "visible",
-                 "format": "ansi", "strip_ansi": False},
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
             )
-            failures = 0
-        except ApiError as exc:  # unknown/closed pane — won't fix itself
-            emit({"t": "error", "message": str(exc)})
+        except OSError as exc:
+            emit({"t": "error", "message": f"cannot start herdr observe: {exc}"})
             stop.set()
             return
-        except (OSError, ValueError, ConnectionError) as exc:
-            failures += 1
-            if failures in (3, 30):
-                emit({"t": "error", "message": f"read failed: {exc}"})
-            if failures > 90:
-                emit({"t": "error", "message": f"giving up after {failures} failed reads: {exc}"})
-                stop.set()
-                return
-            stop.wait(min(2.0, idle_interval * failures))
-            continue
-
-        text = (result.get("read") or {}).get("text", "")
-        if text != last:
-            last = text
-            last_change = now
-            hot_until = now + hot_window   # a change keeps us polling fast
-            cols, rows = screen_size(text)
-            emit({
-                "t": "screen",
-                "text": base64.b64encode(text.encode("utf-8", "replace")).decode(),
-                "cols": cols,
-                "rows": rows,
-            })
-        elif now - last_change >= idle_keepalive:
-            last_change = now
-            emit({"t": "idle"})  # keeps the SSE pipe warm through proxies
-
-        interval = active_interval if now < hot_until else idle_interval
-        stop.wait(interval)
+        try:
+            for raw in proc.stdout:
+                if stop.is_set():
+                    break
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    frame = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = frame.get("type")
+                if kind == "terminal.frame":
+                    failures = 0
+                    emit({
+                        "t": "frame",
+                        "full": bool(frame.get("full")),
+                        "cols": frame.get("width"),
+                        "rows": frame.get("height"),
+                        "seq": frame.get("seq"),
+                        "bytes": frame.get("bytes", ""),
+                    })
+                elif kind == "terminal.closed":
+                    emit({"t": "closed", "message": frame.get("reason") or "pane closed"})
+                    stop.set()
+                    return
+        finally:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        if stop.is_set():
+            return
+        # the stream ended without a terminal.closed — herdr restarted, network
+        # blipped, etc. Retry with backoff; give up only after persistent failure.
+        detail = ""
+        try:
+            detail = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()[:300]
+        except (OSError, ValueError):
+            pass
+        failures += 1
+        if failures in (3, 20):
+            emit({"t": "error", "message": f"observe stream dropped: {detail or 'no output'}"})
+        if failures > 40:
+            emit({"t": "error", "message": f"giving up on observe stream: {detail or 'repeated drops'}"})
+            stop.set()
+            return
+        stop.wait(min(2.0, 0.2 * failures))
 
 
 def input_loop(client: HerdrClient, pane_id: str, stop: threading.Event) -> None:
@@ -212,13 +221,20 @@ def input_batches(ops: list) -> list[dict]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pane", required=True, help="herdr pane id, e.g. wC:p1")
-    ap.add_argument("--interval", type=float, default=0.25, help="seconds between screen reads")
+    ap.add_argument("--cols", type=int, default=200, help="observe stream width")
+    ap.add_argument("--rows", type=int, default=50, help="observe stream height")
     ap.add_argument("--socket", default=None, help="path to herdr.sock")
+    ap.add_argument("--bin", default=None, help="path to the herdr binary")
+    ap.add_argument("--interval", type=float, default=0.0, help="(ignored; kept for compatibility)")
     args = ap.parse_args()
 
     path = socket_path(args.socket)
     if not path:
         emit({"t": "error", "message": "herdr socket not found on this host"})
+        return 1
+    binary = find_herdr(args.bin)
+    if not binary:
+        emit({"t": "error", "message": "herdr binary not found on this host"})
         return 1
 
     client = HerdrClient(path)
@@ -228,9 +244,16 @@ def main() -> int:
         emit({"t": "error", "message": f"cannot reach pane {args.pane}: {exc}"})
         return 1
 
+    env = dict(os.environ)
+    if args.socket or os.environ.get("HERDR_SOCKET_PATH"):
+        env["HERDR_SOCKET_PATH"] = path
+
     stop = threading.Event()
-    reader = threading.Thread(target=read_loop, args=(client, args.pane, args.interval, stop))
-    reader.daemon = True
+    reader = threading.Thread(
+        target=observe_loop,
+        args=(binary, args.pane, max(20, args.cols), max(4, args.rows), env, stop),
+        daemon=True,
+    )
     reader.start()
 
     try:
@@ -240,7 +263,6 @@ def main() -> int:
     finally:
         stop.set()
         reader.join(timeout=2)
-        client.close()
     return 0
 
 

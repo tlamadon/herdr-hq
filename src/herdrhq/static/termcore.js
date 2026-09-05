@@ -120,14 +120,17 @@ const TERM_THEME_LIGHT = {
 function createMirror({ mount, onStatus, onNote, getAllowInput }) {
   const state = {
     xterm: null,
+    fit: null,         // xterm FitAddon: sizes the grid to the container
     source: null,
     target: null,      // {host, pane}
+    reqCols: 0,        // size the observe stream was requested at
+    reqRows: 0,
     fontSize: 13,
-    autoFit: true,     // pick the font size that fills the box; A+/A- overrides
     pending: [],
     flushTimer: null,
     fitTimer: null,
     warnedKeys: false,
+    decoder: new TextDecoder(),
   };
 
   const setStatus = (text, kind) => onStatus?.(text, kind);
@@ -144,90 +147,54 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
       theme: termTheme(),
       cursorBlink: false,
       convertEol: false,
-      scrollback: 0,          // every frame is a full screen; nothing to scroll back to
+      scrollback: 0,          // herdr streams the visible screen, not a scroll log
       drawBoldTextInBrightColors: true,
       minimumContrastRatio: 1,  // trust the agent's colours; don't auto-nudge
       disableStdin: false,
       allowProposedApi: true,
     });
+    state.fit = new FitAddon.FitAddon();
+    state.xterm.loadAddon(state.fit);
     state.xterm.open(mount);
-    state.xterm.write('\x1b[?25l');
     state.xterm.onData(onKey);
     return state.xterm;
   }
 
-  /** Redraw one full screen in place. */
-  function paint(text) {
-    const t = ensureTerm();
-    const lines = text.split('\n').map((l) => l.replace(/\r$/, ''));
-    let out = '\x1b[H';
-    lines.forEach((line, i) => {
-      out += line + '\x1b[K';
-      if (i < lines.length - 1) out += '\r\n';
-    });
-    t.write(out + '\x1b[J');
-  }
-
-  function resize(cols, rows) {
-    const t = ensureTerm();
-    if (cols !== t.cols || rows !== t.rows) t.resize(cols, rows);
-    scheduleFit();
-  }
-
-  /** xterm lays out asynchronously, so measure a couple of frames later. */
-  function scheduleFit() {
-    clearTimeout(state.fitTimer);
-    state.fitTimer = setTimeout(() => requestAnimationFrame(fit), 60);
-  }
-
-  /** Fill the available width by choosing the font size, not by CSS-scaling:
-      text stays crisp, the box height is honest, and reflows don't jump.
-      The target font comes straight from the measured width-per-column —
-      one shot, no iteration, so racing frames can't thrash it. A transform
-      scale-down remains only as a last resort at the minimum font size.
-      Manual A+/A- turns auto-fitting off until the next pane. */
-  const MIN_AUTO_FONT = 10;  // below this the pane scrolls rather than shrinks
-
-  function boxWidth() {
-    // the scroll container: unlike wrapper divs, its width never stretches
-    // with overflowing content, so this measurement is trustworthy
-    const box = mount.parentElement;
-    if (!box) return 0;
-    const pad = getComputedStyle(box);
-    return box.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
-  }
-
-  /** True on-screen width of the rendered grid. NOT mount.scrollWidth — the
-      canvas renderer's backing store carries a device-pixel width that leaks
-      into scrollWidth and reads far too wide. The .xterm-screen element is
-      the honest CSS width. */
-  function gridWidth() {
-    const screen = mount.querySelector('.xterm-screen');
-    return screen ? screen.clientWidth : 0;
-  }
-
-  /** Fill the width by choosing the font size for the pane's fixed column
-      count (herdr dictates cols; we can't reflow them). Font scales linearly
-      with rendered width, so one measurement gives the target directly — no
-      transform, no iteration. A very wide pane (many columns) bottoms out at
-      a readable floor and scrolls horizontally instead of shrinking to a
-      blur. Manual A+/A- turns auto-fitting off until the next pane. */
+  /** Size the grid to the container (FitAddon), and if the fitted column/row
+      count changed materially, re-request the observe stream at the new size —
+      herdr renders the pane to whatever size we ask for, so the grid always
+      fills the panel exactly, no CSS scaling, no clipping. */
   function fit() {
-    if (!state.autoFit || !state.xterm) return;
-    const avail = boxWidth();
-    const w = gridWidth();
-    if (!w || avail <= 0) return;
-    const want = Math.min(22, Math.max(MIN_AUTO_FONT, Math.round(state.fontSize * avail / w)));
-    if (want !== state.fontSize) {
-      state.fontSize = want;
-      state.xterm.options.fontSize = want;
+    if (!state.xterm || !state.fit) return;
+    try { state.fit.fit(); } catch (_) { return; }
+    const { cols, rows } = state.xterm;
+    if (!cols || !rows) return;
+    if (state.target && (Math.abs(cols - state.reqCols) > 1 || Math.abs(rows - state.reqRows) > 1)) {
+      openStream(cols, rows);
     }
   }
 
-  // layout transients (panels unhiding, columns settling, sidebars folding)
-  // resize the container without a window resize; refit whenever it moves
+  function scheduleFit() {
+    clearTimeout(state.fitTimer);
+    state.fitTimer = setTimeout(() => requestAnimationFrame(fit), 80);
+  }
+
+  // the container resizes without a window resize (panels unhiding, sidebar
+  // folding); refit — and re-request at the new size — whenever it moves
   if (typeof ResizeObserver !== 'undefined' && mount.parentElement) {
     new ResizeObserver(scheduleFit).observe(mount.parentElement);
+  }
+
+  function writeFrame(msg) {
+    const t = state.xterm;
+    if (!t) return;
+    if (msg.cols && (msg.cols !== t.cols || msg.rows !== t.rows)) {
+      t.resize(msg.cols, msg.rows);
+    }
+    if (msg.full) t.reset();  // a full repaint starts from a clean slate
+    if (msg.bytes) {
+      t.write(Uint8Array.from(atob(msg.bytes), (c) => c.charCodeAt(0)));
+    }
   }
 
   function onKey(data) {
@@ -265,14 +232,14 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     }
   }
 
-  function connect(target) {
+  /** (Re)open the observe stream at cols×rows. Called on connect and whenever
+      the fitted size changes; the old stream is replaced. */
+  function openStream(cols, rows) {
+    if (!state.target) return;
     if (state.source) state.source.close();
-    state.target = { host: target.host, pane: target.pane };
-    state.autoFit = true;  // a fresh pane goes back to filling the box
-    const t = ensureTerm();
-    t.options.theme = termTheme();
-    t.write('\x1b[2J\x1b[H\x1b[?25l');
-    const qs = new URLSearchParams(state.target).toString();
+    state.reqCols = cols;
+    state.reqRows = rows;
+    const qs = new URLSearchParams({ ...state.target, cols, rows }).toString();
     const src = new EventSource(`/api/term/stream?${qs}`);
     state.source = src;
     setStatus('connecting…', 'connecting');
@@ -280,10 +247,9 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
     src.onmessage = (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.t === 'screen') {
+      if (msg.t === 'frame') {
         setStatus(`live · ${msg.cols}×${msg.rows}`, 'ok');
-        resize(msg.cols, msg.rows);
-        paint(new TextDecoder().decode(Uint8Array.from(atob(msg.text), (c) => c.charCodeAt(0))));
+        writeFrame(msg);
       } else if (msg.t === 'error') {
         setStatus(msg.message, 'error');
       } else if (msg.t === 'closed') {
@@ -295,6 +261,16 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
       if (src.readyState === EventSource.CLOSED) setStatus('disconnected', 'error');
       else setStatus('reconnecting…', 'connecting');
     };
+  }
+
+  function connect(target) {
+    state.target = { host: target.host, pane: target.pane };
+    const t = ensureTerm();
+    t.options.theme = termTheme();
+    t.reset();
+    // size to the container first, then open the stream at that size
+    try { state.fit?.fit(); } catch (_) { /* not laid out yet */ }
+    openStream(t.cols || 200, t.rows || 50);
     requestAnimationFrame(fit);
   }
 
@@ -310,11 +286,10 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
   }
 
   function setFont(size) {
-    state.autoFit = false;  // the user chose; stop second-guessing them
     state.fontSize = Math.min(22, Math.max(8, size));
     if (state.xterm) {
       state.xterm.options.fontSize = state.fontSize;
-      scheduleFit();
+      scheduleFit();  // a different font means a different fit → re-request size
     }
   }
 

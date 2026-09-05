@@ -151,8 +151,16 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         pane = request.query_params.get("pane") or ""
         if not host or not pane:
             return err("host and pane are required", 400)
+
+        def _dim(name, default, lo, hi):
+            try:
+                return max(lo, min(hi, int(request.query_params.get(name, default))))
+            except (TypeError, ValueError):
+                return default
+        cols = _dim("cols", 200, 20, 400)
+        rows = _dim("rows", 50, 4, 200)
         try:
-            session = await fleet.terminal(host, pane)
+            session = await fleet.terminal(host, pane, cols, rows)
         except (PermissionError, KeyError, RuntimeError, OSError, asyncio.TimeoutError) as exc:
             return err(str(exc), 400)
 

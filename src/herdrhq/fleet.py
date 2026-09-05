@@ -198,7 +198,8 @@ class Fleet:
 
     # -- terminal mirrors ----------------------------------------------------
 
-    async def terminal(self, host_name: str, pane_id: str) -> TerminalSession:
+    async def terminal(self, host_name: str, pane_id: str,
+                       cols: int | None = None, rows: int | None = None) -> TerminalSession:
         if not self.cfg.terminal_enabled:
             raise PermissionError("terminals are disabled in the config")
         poller = self.by_name.get(host_name)
@@ -208,17 +209,23 @@ class Fleet:
         async with self.session_lock:
             existing = self.sessions.get(key)
             if existing and not existing.closed:
-                return existing
+                # input calls pass no size and always reuse; a viewer passing a
+                # materially different size (a resize) needs a fresh stream,
+                # since herdr renders the pane at the observed size
+                if cols is None or (abs(existing.cols - cols) <= 1 and abs(existing.rows - rows) <= 1):
+                    return existing
+                existing.close()
+                self.sessions.pop(key, None)
             limit = self.cfg.terminal_max_sessions
             live = [s for s in self.sessions.values() if not s.closed]
             if len(live) >= limit:
                 raise RuntimeError(f"too many open terminals (limit {limit})")
+            c, r = cols or 200, rows or 50
             session = await TerminalSession.open(
-                host_name, poller.transport, pane_id,
-                self.attach_source, self.cfg.terminal_interval,
+                host_name, poller.transport, pane_id, self.attach_source, c, r,
             )
             self.sessions[key] = session
-            log.info("terminal opened: %s %s", host_name, pane_id)
+            log.info("terminal opened: %s %s (%dx%d)", host_name, pane_id, c, r)
             return session
 
     def close_terminal(self, host_name: str, pane_id: str) -> None:

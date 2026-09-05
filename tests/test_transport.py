@@ -53,13 +53,25 @@ def test_spawn_keeps_stdin_for_input():
     assert asyncio.run(go())
 
 
+# A stand-in for the observe stream: emits one full frame, then echoes input.
+FAKE_FRAMES = """
+import sys, json, base64
+print(json.dumps({"t": "frame", "full": True, "cols": 80, "rows": 24, "seq": 1,
+                  "bytes": base64.b64encode(b"hi").decode()}), flush=True)
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("t") == "input":
+        print(json.dumps({"t": "echo", "ops": msg["ops"]}), flush=True)
+"""
+
+
 def test_terminal_session_pump_and_input():
     async def go():
         t = LocalTransport()
-        session = await TerminalSession.open("local", t, "w:p1", FAKE_PANE, 0.25)
+        session = await TerminalSession.open("local", t, "w:p1", FAKE_FRAMES)
         q = session.subscribe()
         msg = await asyncio.wait_for(q.get(), 5)
-        assert msg["t"] == "screen"
+        assert msg["t"] == "frame" and msg["full"] is True
         await session.send_input([{"key": "Enter"}])
         msg = await asyncio.wait_for(q.get(), 5)
         assert msg == {"t": "echo", "ops": [{"key": "Enter"}]}

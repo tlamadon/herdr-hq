@@ -1,8 +1,10 @@
 """One attach.py process mirroring one herdr pane, fanned out to SSE viewers.
 
-The attach script speaks newline-delimited JSON on both streams: screen frames
-and errors come out of stdout; `{"t": "input", "ops": [...]}` lines go into
-stdin (which stays open thanks to the bootstrap trick in transport.py).
+The attach script speaks newline-delimited JSON on both streams: terminal
+frames (raw ANSI, full repaints + diffs) and errors come out of stdout;
+`{"t": "input", "ops": [...]}` lines go into stdin (which stays open thanks to
+the bootstrap trick in transport.py). A late-joining viewer is replayed the
+last full frame plus the diffs since, so it starts from the correct screen.
 """
 
 from __future__ import annotations
@@ -17,13 +19,16 @@ from .transport import Proc
 
 
 class TerminalSession:
-    def __init__(self, host_name: str, pane_id: str, proc: Proc):
+    def __init__(self, host_name: str, pane_id: str, proc: Proc, cols: int, rows: int):
         self.host_name = host_name
         self.pane_id = pane_id
+        self.cols = cols
+        self.rows = rows
         self.key = (host_name, pane_id)
         self.proc = proc
         self.subscribers: set[asyncio.Queue] = set()
-        self.latest: dict | None = None
+        self.full_frame: dict | None = None   # last full repaint (for late joiners)
+        self.diffs: list[dict] = []           # diffs since that full frame
         self.error: str | None = None
         self.empty_since: float | None = time.time()
         self.closed = False
@@ -31,12 +36,14 @@ class TerminalSession:
 
     @classmethod
     async def open(
-        cls, host_name: str, transport, pane_id: str, source: str, interval: float,
+        cls, host_name: str, transport, pane_id: str, source: str,
+        cols: int = 200, rows: int = 50,
     ) -> "TerminalSession":
         proc = await transport.spawn(
-            source, ["--pane", pane_id, "--interval", str(interval)], keep_stdin=True,
+            source, ["--pane", pane_id, "--cols", str(cols), "--rows", str(rows)],
+            keep_stdin=True,
         )
-        session = cls(host_name, pane_id, proc)
+        session = cls(host_name, pane_id, proc, cols, rows)
         session._pump_task = asyncio.create_task(
             session._pump(), name=f"term-{host_name}-{pane_id}",
         )
@@ -55,10 +62,19 @@ class TerminalSession:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if msg.get("t") == "screen":
-                    self.latest = msg
+                t = msg.get("t")
+                if t == "frame":
                     self.error = None  # a good frame supersedes any earlier complaint
-                elif msg.get("t") == "error":
+                    if msg.get("full"):
+                        self.full_frame = msg
+                        self.diffs = []
+                        if msg.get("cols"):
+                            self.cols, self.rows = msg["cols"], msg["rows"]
+                    elif self.full_frame is not None:
+                        self.diffs.append(msg)
+                elif t == "closed":
+                    self.error = msg.get("message")
+                elif t == "error":
                     self.error = msg.get("message")
                 self.broadcast(msg)
         except (OSError, ValueError, asyncssh.Error):
@@ -81,11 +97,20 @@ class TerminalSession:
                 pass
 
     def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=64)
+        # frames can be large and bursty; a deep queue lets a briefly-busy
+        # browser catch up without dropping diffs (a drop desyncs until the
+        # next full frame)
+        q: asyncio.Queue = asyncio.Queue(maxsize=512)
         self.subscribers.add(q)
         self.empty_since = None
-        if self.latest:
-            q.put_nowait(self.latest)
+        # replay the current screen so a late joiner starts correct
+        if self.full_frame is not None:
+            q.put_nowait(self.full_frame)
+            for diff in self.diffs:
+                try:
+                    q.put_nowait(diff)
+                except asyncio.QueueFull:
+                    break
         if self.error:
             q.put_nowait({"t": "error", "message": self.error})
         return q

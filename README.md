@@ -61,22 +61,22 @@ Every agent card has a **⌨** button that opens a live xterm.js view of that pa
 machine, without leaving the browser. It's writable — click the screen and type, same as a
 terminal. Untick **Send keys** to hold it read-only while you watch.
 
-herdr publishes no raw output stream, so this is a *mirror* rather than a PTY attach:
-`attach.py` polls `pane.read` for the visible screen with ANSI intact (4×/s by default)
-and pushes a frame whenever it changes. The browser repaints in place — cursor home, erase
-to end of line per row — which is flicker-free. The local cursor is hidden, because herdr
-doesn't tell us where the real one is.
+Output comes from herdr's own per-pane stream — `attach.py` runs `herdr terminal session
+observe <pane> --cols --rows`, which emits terminal frames (raw ANSI, full repaints plus
+diffs) as herdr produces them. The browser writes those bytes straight into xterm.js, so
+colours, box-drawing and synchronized output all render correctly and updates arrive in
+real time — no polling, no screen scraping. The terminal is sized with xterm's FitAddon
+and herdr renders the pane to that exact size, so it fills the panel cleanly.
 
-- **Output** streams to the browser over SSE (`/api/term/stream`).
-- **Input** is POSTed to `/api/term/input` and coalesced, so a burst of typing or a paste
-  is one request.
-- **Keys are translated, not forwarded.** herdr takes *named* keys — a raw `\x15` byte
-  shows up in the pane as a literal `^U` — so xterm's byte stream is split into printable
-  runs (`text`) and key names (`Ctrl+U`, `Enter`, `Shift+Tab`, `Alt+Left`, …). herdr 0.8.2
-  has no name for **Delete, Home, End, PageUp or PageDown**; those keys are dropped and
-  the footer says so.
-- Mirrors are shared: two browsers on the same pane use one ssh connection. A mirror with
-  no viewers is torn down after 20s.
+- **Output** streams to the browser over SSE (`/api/term/stream?host=&pane=&cols=&rows=`).
+- **Input** is POSTed to `/api/term/input` and coalesced (observe is read-only, so keys
+  go through the socket API's `pane.send_input`; the echo returns on the next frame). Keys
+  are translated to herdr's *named* keys (`Ctrl+U`, `Enter`, `Shift+Tab`, …); herdr has no
+  name for **Delete, Home, End, PageUp or PageDown**, so those are dropped and the footer
+  says so.
+- Streams are shared: two browsers on the same pane at the same size use one ssh
+  connection, and a late joiner is replayed the current screen. A stream with no viewers is
+  torn down after 20s.
 - `?termhost=<host>&termpane=<pane>` deep-links straight into a terminal.
 
 Typing goes to a **live agent session** — the same buffer the agent is reading, so a stray
@@ -85,8 +85,9 @@ open modal never swallows keystrokes on its own. Two switches in the config lock
 further: `terminal.input: false` (view-only, the checkbox is disabled) or
 `terminal.enabled: false` (no terminals at all).
 
-One way this is unlike a local terminal: there's no cursor (herdr doesn't report its
-position) and the mirror runs ~250 ms behind, so typing is slightly blind.
+The observe stream is read-only, so the cursor isn't shown (herdr hides it there); typing
+echoes on the next frame rather than instantly. herdr also offers a writable `control`
+stream — a future upgrade path for raw input and predictive local echo.
 
 `static/vendor/xterm.js` is vendored so the dashboard works offline; nothing is fetched
 from a CDN at runtime.

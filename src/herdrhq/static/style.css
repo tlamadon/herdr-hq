@@ -489,12 +489,12 @@ body.is-modal { overflow: hidden; }
 .term-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); cursor: pointer; }
 
 .term-body {
-  flex: 1; min-height: 0; overflow: auto;
+  flex: 1; min-height: 0; overflow: hidden;
   padding: 12px 14px;
   background: #161615;   /* the terminal is always dark (see termcore.js) */
 }
 .term-body .xterm-viewport { background: transparent !important; }
-.term-mount { transform-origin: top left; width: max-content; }
+.term-mount { width: 100%; height: 100%; }
 
 .term-foot {
   padding: 8px 14px; border-top: 1px solid var(--grid);
@@ -870,7 +870,7 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
    (not just the grid's max-content width), with breathing room and a subtle
    frame, so it reads as a window rather than floating text */
 .work-term {
-  flex: 1; overflow: auto; margin: 8px 18px 14px; padding: 10px 12px;
+  flex: 1; overflow: hidden; margin: 8px 18px 14px; padding: 10px 12px;
   background: #161615;   /* the terminal is always dark (see termcore.js) */
   border: 1px solid var(--border); border-radius: 10px;
 }
