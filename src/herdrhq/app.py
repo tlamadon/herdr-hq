@@ -15,6 +15,7 @@ POST /api/term/close        {"host", "pane"}
 GET  /api/hosts             configured + connected hosts (for the browse view)
 GET  /api/fs/ls?host=&path=     directory listing (path defaults to remote home)
 GET  /api/fs/file?host=&path=   stream file bytes (&dl=1 forces download)
+POST /api/fs/write          {"host", "path", "content"} — overwrite a text file
 GET  /api/fs/watch?host=&path=  SSE: fires when (mtime, size) settles on a new value
 GET  /api/views             open live views (one per /api/fs/watch stream)
 DELETE /api/views/{id}      detach a live view (its tab closes itself)
@@ -404,6 +405,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/hosts", files.hosts),
         Route("/api/fs/ls", files.ls),
         Route("/api/fs/file", files.file),
+        Route("/api/fs/write", files.write, methods=["POST"]),
         Route("/api/fs/watch", files.watch),
         Route("/api/views", files.views_get),
         Route("/api/views/{vid:int}", files.views_delete, methods=["DELETE"]),

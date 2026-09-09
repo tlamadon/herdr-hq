@@ -28,6 +28,7 @@ from .pool import SSHPool
 log = logging.getLogger("herdrhq.files")
 
 CHUNK = 256 * 1024
+MAX_WRITE = 4 * 1024 * 1024  # editor saves are capped; larger files stay read-only
 
 # Extensions we serve as text/plain when mimetypes has no (browser-friendly)
 # answer, so "peeking" at them renders in the browser instead of downloading.
@@ -123,6 +124,17 @@ class LocalFs:
 
         return st.st_size, body()
 
+    async def write(self, path: str, data: bytes) -> tuple[int, int | None]:
+        """Overwrite the file, preserving its existing mode (wb truncates in
+        place). Returns (bytes_written, mtime)."""
+        def go():
+            p = _local_path(path)
+            with open(p, "wb") as fh:
+                fh.write(data)
+            st = os.stat(p)
+            return len(data), int(st.st_mtime)
+        return await asyncio.to_thread(go)
+
 
 class SftpFs:
     """SFTP through the shared pool, for ssh hosts (configured or ad-hoc)."""
@@ -201,6 +213,20 @@ class SftpFs:
 
         return attrs.size, body()
 
+    async def write(self, path: str, data: bytes) -> tuple[int, int | None]:
+        """Overwrite over SFTP (wb truncates). Returns (bytes_written, mtime)."""
+        sftp = await self._sftp()
+        f = await sftp.open(path, "wb")
+        try:
+            await f.write(data)
+        finally:
+            with contextlib.suppress(Exception):
+                await f.close()
+        mtime = None
+        with contextlib.suppress(Exception):
+            mtime = (await sftp.stat(path)).mtime
+        return len(data), mtime
+
 
 FS_ERRORS = (OSError, asyncssh.Error, asyncio.TimeoutError)
 
@@ -278,6 +304,31 @@ class FileRoutes:
                 f'attachment; filename="{PurePosixPath(path).name}"'
             )
         return StreamingResponse(body, media_type=guess_type(path, dl), headers=headers)
+
+    async def write(self, request: Request) -> JSONResponse:
+        """Overwrite a text file with the editor's contents. Explicit save only —
+        there's no autosave, and the frontend gates this behind a Save button."""
+        try:
+            body = await request.json()
+        except ValueError:  # includes json.JSONDecodeError
+            return err("body must be JSON", 400)
+        host = body.get("host")
+        path = body.get("path")
+        content = body.get("content")
+        if not host or not path:
+            return err("missing host or path", 400)
+        if not isinstance(content, str):
+            return err("content must be a string", 400)
+        data = content.encode("utf-8")
+        if len(data) > MAX_WRITE:
+            return err(f"file too large to save ({len(data)} bytes)", 413)
+        fs = self.backend(host)
+        try:
+            size, mtime = await fs.write(path, data)
+        except FS_ERRORS as e:
+            return err(e)
+        log.info("wrote %s:%s (%d bytes)", host, path, size)
+        return JSONResponse({"ok": True, "size": size, "mtime": mtime})
 
     async def watch(self, request: Request) -> Response:
         """SSE stream of change events for one file.

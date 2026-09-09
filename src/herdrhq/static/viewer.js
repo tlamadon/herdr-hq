@@ -49,6 +49,13 @@ const MAX_TEXT = 2 * 1024 * 1024;
 let rendering = false;
 let queued = null;
 
+// editor state (CodeMirror). Only text/markdown files are editable.
+const editable = (kind === 'text' || kind === 'markdown') && !!window.CodeMirror;
+let editing = false;
+let cm = null;
+let baseText = '';
+let previewEl = null;
+
 function setStatus(state, label) {
   status.dataset.state = state;
   status.title = label;
@@ -87,6 +94,7 @@ async function addLinks(doc, page, vp, div, pageDivs) {
 }
 
 async function render(version) {
+  if (editing) return;  // the editor owns the surface; don't re-render under it
   if (rendering) { queued = version; return; }
   rendering = true;
   try {
@@ -212,6 +220,137 @@ async function renderPdf(url) {
   swap(next);
   return `${doc.numPages} page${doc.numPages === 1 ? '' : 's'}`;
 }
+
+/* ------------------------------------------------- editor (CodeMirror) */
+
+const actions = document.getElementById('editActions');
+
+function actionBtn(label, onClick, cls) {
+  const b = el('button', { class: `viewer-btn${cls ? ' ' + cls : ''}`, type: 'button' });
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function renderActions() {
+  if (!actions) return;
+  actions.replaceChildren();
+  if (!editable) return;
+  if (!editing) {
+    actions.append(actionBtn('✎ Edit', enterEdit, 'edit'));
+    return;
+  }
+  if (kind === 'markdown') {
+    actions.append(actionBtn(previewEl ? '◂ Edit' : 'Preview ▸', togglePreview));
+  }
+  actions.append(actionBtn('Save', save, 'primary'));
+  actions.append(actionBtn('Cancel', cancel));
+}
+
+function modeForFile() {
+  const info = (CodeMirror.findModeByFileName && CodeMirror.findModeByFileName(base))
+    || (CodeMirror.findModeByExtension && CodeMirror.findModeByExtension((base.split('.').pop() || '').toLowerCase()));
+  return info ? (info.mime || info.mode) : (kind === 'markdown' ? 'markdown' : null);
+}
+
+function isDirty() { return !!cm && cm.getValue() !== baseText; }
+function updateDirty() { meta.textContent = isDirty() ? '● unsaved changes' : 'saved'; }
+
+async function enterEdit() {
+  let text;
+  try {
+    text = await fetchText(`/api/fs/file?${qs({ host, path, v: Date.now() })}`);
+  } catch (e) {
+    setStatus('error', `can't open for edit: ${e.message || e}`);
+    return;
+  }
+  if (es) { es.close(); es = null; }         // pause live-watch while editing
+  clearInterval(pollTimer); pollTimer = null;
+  editing = true; previewEl = null; baseText = text;
+  setStatus('paused', 'editing');
+  document.body.classList.add('editing');
+  const wrap = el('div', { class: 'pageset cm-wrap' });  // keep .pageset so swap() can replace it on exit
+  swap(wrap);
+  cm = CodeMirror(wrap, {
+    value: text,
+    mode: modeForFile(),
+    lineNumbers: true,
+    lineWrapping: false,
+    matchBrackets: true,
+    autoCloseBrackets: true,
+    styleActiveLine: true,
+    indentUnit: 2,
+    tabSize: 2,
+    theme: 'herdr',
+    extraKeys: {
+      'Cmd-S': save,
+      'Ctrl-S': save,
+      Tab: (i) => i.execCommand('insertSoftTab'),
+    },
+  });
+  cm.on('change', updateDirty);
+  cm.focus();
+  renderActions();
+  updateDirty();
+}
+
+async function save() {
+  if (!cm) return;
+  const content = cm.getValue();
+  setStatus('paused', 'saving…');
+  try {
+    const r = await fetch('/api/fs/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host, path, content }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok || !body.ok) throw new Error(body.error || `save failed (${r.status})`);
+    baseText = content;
+    setStatus('ok', 'editing');
+    meta.textContent = `saved · ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    setStatus('error', 'save failed');
+    meta.textContent = `save failed: ${e.message || e}`;
+  }
+}
+
+function cancel() {
+  if (isDirty() && !window.confirm('Discard unsaved changes?')) return;
+  editing = false;
+  cm = null;
+  previewEl = null;
+  document.body.classList.remove('editing');
+  renderActions();
+  connect();                              // resume the live-watch
+  render(`edit-exit-${Date.now()}`);
+}
+
+// markdown-only: flip between the editor and a rendered preview of the buffer
+function togglePreview() {
+  if (!cm) return;
+  const wrap = document.querySelector('.cm-wrap');
+  if (!previewEl) {
+    previewEl = renderMarkdown(cm.getValue(), { host, baseDir: dirName });
+    previewEl.classList.add('cm-preview');
+    cm.getWrapperElement().style.display = 'none';
+    wrap.append(previewEl);
+  } else {
+    previewEl.remove();
+    previewEl = null;
+    cm.getWrapperElement().style.display = '';
+    cm.refresh();
+    cm.focus();
+  }
+  renderActions();
+}
+
+// warn before leaving with unsaved edits
+window.addEventListener('beforeunload', (e) => {
+  if (isDirty()) { e.preventDefault(); e.returnValue = ''; }
+});
+
+renderActions();
 
 /* ------------------------------------------------- change stream */
 

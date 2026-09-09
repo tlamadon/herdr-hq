@@ -707,6 +707,51 @@ body.is-modal { overflow: hidden; }
 }
 .code-body code.hljs { display: block; background: none; padding: 0; }
 
+/* ---- editor (CodeMirror 5), themed to the app tokens (light + dark) ---- */
+.viewer-actions { display: inline-flex; gap: 6px; align-items: center; flex: none; }
+.viewer-btn {
+  font: inherit; font-size: 12px; padding: 3px 11px; cursor: pointer; line-height: 1.6;
+  color: var(--ink); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 7px;
+}
+.viewer-btn:hover { background: var(--surface-2); }
+.viewer-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.viewer-btn.primary:hover { filter: brightness(1.06); }
+.viewer-btn.edit { color: var(--accent); }
+
+.viewer-body.editing .viewer-scroll { overflow: hidden; }
+.pageset.cm-wrap { display: block; align-items: stretch; padding: 0; width: 100%; height: 100%; }
+.cm-wrap .cm-preview.md-body { margin: 22px auto; height: auto; }
+
+.cm-s-herdr.CodeMirror {
+  height: 100%; background: var(--surface-1); color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, "Nerd Symbols", monospace;
+  font-size: 13px;
+}
+.cm-s-herdr .CodeMirror-gutters {
+  background: color-mix(in oklab, var(--surface-1) 55%, var(--border));
+  border-right: 1px solid var(--border);
+}
+.cm-s-herdr .CodeMirror-linenumber { color: var(--muted); }
+.cm-s-herdr .CodeMirror-cursor { border-left: 1.6px solid var(--ink); }
+.cm-s-herdr .CodeMirror-selected { background: color-mix(in oklab, var(--accent) 22%, transparent); }
+.cm-s-herdr.CodeMirror-focused .CodeMirror-selected { background: color-mix(in oklab, var(--accent) 26%, transparent); }
+.cm-s-herdr .CodeMirror-activeline-background { background: color-mix(in oklab, var(--accent) 7%, transparent); }
+.cm-s-herdr .CodeMirror-matchingbracket { color: var(--accent) !important; font-weight: 600; }
+.cm-s-herdr .CodeMirror-nonmatchingbracket { color: var(--critical) !important; }
+/* tokens — same palette as the hljs read-only view */
+.cm-s-herdr .cm-comment { color: var(--muted); font-style: italic; }
+.cm-s-herdr .cm-keyword, .cm-s-herdr .cm-atom, .cm-s-herdr .cm-type { color: var(--series-7); }
+.cm-s-herdr .cm-string, .cm-s-herdr .cm-string-2 { color: var(--series-3); }
+.cm-s-herdr .cm-number, .cm-s-herdr .cm-meta { color: var(--series-2); }
+.cm-s-herdr .cm-def, .cm-s-herdr .cm-tag, .cm-s-herdr .cm-header { color: var(--accent); }
+.cm-s-herdr .cm-variable, .cm-s-herdr .cm-variable-2, .cm-s-herdr .cm-variable-3,
+.cm-s-herdr .cm-attribute, .cm-s-herdr .cm-property { color: var(--ink-2); }
+.cm-s-herdr .cm-builtin, .cm-s-herdr .cm-qualifier { color: var(--serious); }
+.cm-s-herdr .cm-operator, .cm-s-herdr .cm-bracket { color: var(--ink); }
+.cm-s-herdr .cm-link { color: var(--accent); text-decoration: underline; }
+.cm-s-herdr .cm-error { color: var(--critical); }
+
 /* ------------------------------------------------------------ markdown */
 
 .md-body {
