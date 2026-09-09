@@ -1,7 +1,13 @@
+import shutil
+import subprocess
+
+import pytest
 from starlette.testclient import TestClient
 
 from herdrhq.app import create_app
 from herdrhq.config import Config, HostSpec
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
 
 def local_app():
@@ -113,3 +119,77 @@ def test_pages_served():
     assert client.get("/favicon.svg").status_code == 200
     r = client.get("/browse", follow_redirects=False)
     assert r.status_code == 307 and r.headers["location"] == "/work"
+
+
+def _git(cwd, *args):
+    subprocess.run(
+        ["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "-c", "commit.gpgsign=false", *args],
+        check=True, capture_output=True)
+
+
+@needs_git
+def test_git_show_head(tmp_path):
+    _git(tmp_path, "init", "-q")
+    p = tmp_path / "notes.md"
+    p.write_text("v1\n")
+    _git(tmp_path, "add", "notes.md")
+    _git(tmp_path, "commit", "-q", "-m", "v1")
+    p.write_text("v2\n")  # working copy moves on; HEAD stays v1
+    client = TestClient(local_app(), base_url="http://localhost")
+    r = client.get("/api/fs/git-show", params={"host": "local", "path": str(p)})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["content"] == "v1\n"
+    assert data["relpath"] == "notes.md"
+    assert data["ref"] == "HEAD"
+    # macOS resolves /var -> /private/var; compare resolved paths
+    assert data["toplevel"] == str(tmp_path.resolve())
+
+
+@needs_git
+def test_git_show_not_a_repo(tmp_path):
+    p = tmp_path / "loose.txt"
+    p.write_text("no repo here")
+    client = TestClient(local_app(), base_url="http://localhost")
+    r = client.get("/api/fs/git-show", params={"host": "local", "path": str(p)})
+    assert r.status_code == 404
+    assert r.json()["reason"] == "not_a_repo"
+
+
+@needs_git
+def test_git_show_untracked(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("committed")
+    _git(tmp_path, "add", "a.txt")
+    _git(tmp_path, "commit", "-q", "-m", "init")
+    p = tmp_path / "new.txt"
+    p.write_text("not committed yet")
+    client = TestClient(local_app(), base_url="http://localhost")
+    r = client.get("/api/fs/git-show", params={"host": "local", "path": str(p)})
+    assert r.status_code == 404
+    assert r.json()["reason"] == "not_in_ref"
+
+
+def test_git_show_bad_params(tmp_path):
+    client = TestClient(local_app(), base_url="http://localhost")
+    assert client.get("/api/fs/git-show").status_code == 400
+    r = client.get("/api/fs/git-show",
+                   params={"host": "local", "path": str(tmp_path), "ref": "--help"})
+    assert r.status_code == 400
+    r = client.get("/api/fs/git-show",
+                   params={"host": "local", "path": str(tmp_path), "ref": "bad ref;rm"})
+    assert r.status_code == 400
+
+
+@needs_git
+def test_git_show_binary(tmp_path):
+    _git(tmp_path, "init", "-q")
+    p = tmp_path / "blob.bin"
+    p.write_bytes(b"a\x00b")
+    _git(tmp_path, "add", "blob.bin")
+    _git(tmp_path, "commit", "-q", "-m", "bin")
+    client = TestClient(local_app(), base_url="http://localhost")
+    r = client.get("/api/fs/git-show", params={"host": "local", "path": str(p)})
+    assert r.status_code == 415
+    assert r.json()["reason"] == "binary"

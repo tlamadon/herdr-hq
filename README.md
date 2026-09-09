@@ -188,6 +188,10 @@ garbage, and your scroll position survives every refresh:
 - **Markdown** renders with a vendored `marked`, sanitized through DOMPurify; relative
   images and links inside a remote README resolve through the file API.
 - **Images** and **text/code/log files** render directly.
+- Text and markdown files have a **⇆ Diff** mode: a side-by-side view with word-level
+  highlights against git `HEAD` (run on the host over the pooled connection), against
+  the previous version seen in the tab, or — while editing — the unsaved buffer
+  against what's on disk. The diff tracks the live file as it changes.
 
 Open live views are listed on the Browse page (with a cross-tab "Recent views"
 history), and **Tunnels** opens raw TCP forwards `127.0.0.1:<local> → host:<port>`
@@ -384,3 +388,8 @@ the startup URL. First visit sets a 30-day cookie. `listen.auth: none` opts out.
 - `herdr-hq.yaml` and `config.json` are gitignored — they hold your machine list.
 - `src/herdrhq/static/vendor/xterm.js` is a vendored copy of
   [xterm.js](https://xtermjs.org) 5.5.0, MIT licensed; see `vendor/LICENSE-xterm.txt`.
+- `vendor/codemirror/addon/merge/` is the merge addon from the same CodeMirror 5.65.16
+  release as the rest of `vendor/codemirror` (MIT, `vendor/codemirror/LICENSE`).
+- `vendor/diff_match_patch.js` is `javascript/diff_match_patch_uncompressed.js` from
+  [google/diff-match-patch](https://github.com/google/diff-match-patch), Apache-2.0;
+  see `vendor/LICENSE-diff-match-patch.txt`.

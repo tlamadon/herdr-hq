@@ -56,6 +56,15 @@ let cm = null;
 let baseText = '';
 let previewEl = null;
 
+// diff state (CodeMirror merge addon). Same file kinds as the editor.
+const diffable = editable && !!(window.CodeMirror && CodeMirror.MergeView);
+let diffing = false;      // view-mode diff owns the surface
+let mv = null;            // MergeView instance (view- or edit-mode)
+let diffSource = 'head';  // 'head' | 'prev'
+let editDiffEl = null;    // edit-mode overlay (same idiom as previewEl)
+let curSnap = null;       // {text, at} — last rendered text, for "previous"
+let prevSnap = null;
+
 function setStatus(state, label) {
   status.dataset.state = state;
   status.title = label;
@@ -95,6 +104,7 @@ async function addLinks(doc, page, vp, div, pageDivs) {
 
 async function render(version) {
   if (editing) return;  // the editor owns the surface; don't re-render under it
+  if (diffing) { refreshDiff(version); return; }  // live-update the right pane
   if (rendering) { queued = version; return; }
   rendering = true;
   try {
@@ -144,8 +154,18 @@ async function fetchText(url) {
   return r.text();
 }
 
+// Keep one step of history so diff mode can show "current vs previous".
+// Identical re-renders (tab resume, poll fallback) must not clobber it.
+function snapshot(text) {
+  if (curSnap && curSnap.text === text) return;
+  prevSnap = curSnap;
+  curSnap = { text, at: new Date() };
+  if (diffing) renderActions();  // 'previous' may have just become available
+}
+
 async function renderMarkdownFile(url) {
   const text = await fetchText(url);
+  snapshot(text);
   // the shared pipeline (md.js): marked -> DOMPurify -> link rewrite -> hljs -> KaTeX
   const body = renderMarkdown(text, { host, baseDir: dirName, version: url.split('v=').pop() });
   const next = el('div', { class: 'pageset' }, [body]);
@@ -167,6 +187,7 @@ const EXT_LANG = {
 
 async function renderText(url) {
   const raw = await fetchText(url);
+  snapshot(raw);
   const src = raw.replace(/\n$/, '');  // drop one trailing newline — no phantom last line
   const ext = (base.split('.').pop() || '').toLowerCase();
   const want = EXT_LANG[ext];
@@ -236,12 +257,32 @@ function renderActions() {
   if (!actions) return;
   actions.replaceChildren();
   if (!editable) return;
+  if (diffing) {
+    const seg = el('span', { class: 'viewer-seg' });
+    for (const [id, label] of [['head', 'HEAD'], ['prev', 'previous']]) {
+      const b = actionBtn(label, () => { if (diffSource !== id) enterDiff(id); },
+        diffSource === id ? 'seg on' : 'seg');
+      if (id === 'prev' && !prevSnap) {
+        b.disabled = true;
+        b.title = 'no earlier version seen in this tab yet';
+      }
+      seg.append(b);
+    }
+    actions.append(seg, actionBtn('Done', exitDiff));
+    return;
+  }
   if (!editing) {
+    if (diffable) actions.append(actionBtn('⇆ Diff', () => enterDiff('head')));
     actions.append(actionBtn('✎ Edit', enterEdit, 'edit'));
     return;
   }
-  if (kind === 'markdown') {
-    actions.append(actionBtn(previewEl ? '◂ Edit' : 'Preview ▸', togglePreview));
+  if (editDiffEl) {
+    actions.append(actionBtn('◂ Edit', toggleEditDiff));
+  } else {
+    if (kind === 'markdown') {
+      actions.append(actionBtn(previewEl ? '◂ Edit' : 'Preview ▸', togglePreview));
+    }
+    if (diffable) actions.append(actionBtn('⇆ Diff', toggleEditDiff));
   }
   actions.append(actionBtn('Save', save, 'primary'));
   actions.append(actionBtn('Cancel', cancel));
@@ -307,6 +348,7 @@ async function save() {
     const body = await r.json().catch(() => ({}));
     if (!r.ok || !body.ok) throw new Error(body.error || `save failed (${r.status})`);
     baseText = content;
+    if (editDiffEl && mv) mv.leftOriginal().setValue(baseText);  // buffer-diff stays fresh
     setStatus('ok', 'editing');
     meta.textContent = `saved · ${new Date().toLocaleTimeString()}`;
   } catch (e) {
@@ -320,6 +362,8 @@ function cancel() {
   editing = false;
   cm = null;
   previewEl = null;
+  editDiffEl = null;
+  mv = null;
   document.body.classList.remove('editing');
   renderActions();
   connect();                              // resume the live-watch
@@ -341,6 +385,107 @@ function togglePreview() {
     cm.getWrapperElement().style.display = '';
     cm.refresh();
     cm.focus();
+  }
+  renderActions();
+}
+
+/* ------------------------------------------------- diff view (merge addon) */
+
+async function fetchBaseline(source) {
+  if (source === 'prev') {
+    if (!prevSnap) throw new Error('no previous version seen yet');
+    return { text: prevSnap.text, label: `previous (${prevSnap.at.toLocaleTimeString()})` };
+  }
+  const r = await fetch(`/api/fs/git-show?${qs({ host, path })}`);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(body.reason === 'not_a_repo' ? 'not in a git repository'
+      : body.reason === 'not_in_ref' ? 'file not in HEAD'
+      : body.reason === 'no_git' ? 'git not available on host'
+      : body.reason === 'binary' ? 'binary file in HEAD'
+      : body.error || `HTTP ${r.status}`);
+  }
+  return { text: body.content, label: `HEAD:${body.relpath}` };
+}
+
+const mergeOpts = () => ({
+  mode: modeForFile(),
+  theme: 'herdr',
+  lineNumbers: true,
+  lineWrapping: kind === 'markdown',
+  readOnly: true,
+  revertButtons: false,
+  connect: 'align',
+  collapseIdentical: 2,
+  allowEditingOriginals: false,
+});
+
+async function enterDiff(source) {
+  if (editing) { toggleEditDiff(); return; }
+  let cur;
+  let baseline;
+  try {
+    cur = await fetchText(`/api/fs/file?${qs({ host, path, v: Date.now() })}`);
+    baseline = await fetchBaseline(source);
+  } catch (e) {
+    meta.textContent = `diff unavailable: ${e.message || e}`;
+    return;
+  }
+  snapshot(cur);
+  diffSource = source;
+  diffing = true;
+  document.body.classList.add('diffing');
+  const wrap = el('div', { class: 'pageset cm-wrap diff-wrap' });
+  swap(wrap);                            // watch stays connected, unlike editing
+  mv = CodeMirror.MergeView(wrap, { value: cur, origLeft: baseline.text, ...mergeOpts() });
+  meta.textContent = `diff: ${baseline.label} ⟶ current`;
+  renderActions();
+}
+
+// Change events land here while diffing: roll the right pane forward in place.
+async function refreshDiff(version) {
+  if (!mv) return;
+  try {
+    const text = await fetchText(`/api/fs/file?${qs({ host, path, v: version })}`);
+    snapshot(text);
+    mv.editor().setValue(text);
+    if (diffSource === 'prev' && prevSnap) mv.leftOriginal().setValue(prevSnap.text);
+    meta.textContent = `diff updated ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    meta.textContent = `refresh failed: ${e.message || e}`;
+  }
+}
+
+function exitDiff() {
+  diffing = false;
+  mv = null;
+  document.body.classList.remove('diffing');
+  renderActions();
+  render(`diff-exit-${Date.now()}`);
+}
+
+// edit-mode only: overlay a read-only buffer-vs-disk diff (togglePreview idiom —
+// hide the editor, never swap it out, so the editing session survives)
+function toggleEditDiff() {
+  if (!cm) return;
+  const wrap = document.querySelector('.cm-wrap');
+  if (!editDiffEl) {
+    if (previewEl) togglePreview();      // overlays are exclusive
+    editDiffEl = el('div', { class: 'cm-diff' });
+    cm.getWrapperElement().style.display = 'none';
+    wrap.append(editDiffEl);
+    mv = CodeMirror.MergeView(editDiffEl, {
+      value: cm.getValue(), origLeft: baseText, ...mergeOpts(),
+    });
+    meta.textContent = 'diff: on disk ⟶ unsaved buffer';
+  } else {
+    editDiffEl.remove();
+    editDiffEl = null;
+    mv = null;
+    cm.getWrapperElement().style.display = '';
+    cm.refresh();
+    cm.focus();
+    updateDirty();
   }
   renderActions();
 }

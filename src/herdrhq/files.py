@@ -14,6 +14,9 @@ import json
 import logging
 import mimetypes
 import os
+import posixpath
+import re
+import shlex
 import stat as statmod
 import time
 from pathlib import Path, PurePosixPath
@@ -29,6 +32,13 @@ log = logging.getLogger("herdrhq.files")
 
 CHUNK = 256 * 1024
 MAX_WRITE = 4 * 1024 * 1024  # editor saves are capped; larger files stay read-only
+MAX_DIFF = MAX_WRITE  # git-show baselines share the editor ceiling
+
+# Same lock-hygiene recipe as remote/collector.py: never take optional locks,
+# so peeking at a repo can't collide with the agent's own git.
+GIT = ["git", "--no-optional-locks"]
+# Conservative ref charset; no leading '-' so a ref can't become a git option.
+REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}^~-]{0,127}$")
 
 # Extensions we serve as text/plain when mimetypes has no (browser-friendly)
 # answer, so "peeking" at them renders in the browser instead of downloading.
@@ -135,6 +145,20 @@ class LocalFs:
             return len(data), int(st.st_mtime)
         return await asyncio.to_thread(go)
 
+    async def run_argv(self, argv: list[str], timeout: float = 15.0) -> tuple[int, bytes, str]:
+        """Run a command locally. Returns (rc, stdout_bytes, stderr_text)."""
+        proc = await asyncio.create_subprocess_exec(
+            *argv, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat"},
+        )
+        try:
+            out, errb = await asyncio.wait_for(proc.communicate(), timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise
+        return proc.returncode or 0, out, errb.decode("utf-8", "replace")
+
 
 class SftpFs:
     """SFTP through the shared pool, for ssh hosts (configured or ad-hoc)."""
@@ -226,6 +250,14 @@ class SftpFs:
         with contextlib.suppress(Exception):
             mtime = (await sftp.stat(path)).mtime
         return len(data), mtime
+
+    async def run_argv(self, argv: list[str], timeout: float = 15.0) -> tuple[int, bytes, str]:
+        """Run a command on the host. encoding=None keeps stdout binary-safe."""
+        st = await asyncio.wait_for(self.pool.get(self.target), timeout)
+        result = await asyncio.wait_for(
+            st.conn.run(shlex.join(argv), check=False, encoding=None), timeout)
+        return (result.exit_status or 0, result.stdout or b"",
+                (result.stderr or b"").decode("utf-8", "replace"))
 
 
 FS_ERRORS = (OSError, asyncssh.Error, asyncio.TimeoutError)
@@ -329,6 +361,50 @@ class FileRoutes:
             return err(e)
         log.info("wrote %s:%s (%d bytes)", host, path, size)
         return JSONResponse({"ok": True, "size": size, "mtime": mtime})
+
+    async def git_show(self, request: Request) -> JSONResponse:
+        """The committed version of a file, for the viewer's diff mode.
+
+        Failures carry a `reason` the frontend can explain: not_a_repo,
+        not_in_ref (also untracked files), no_git, binary.
+        """
+        host = request.query_params.get("host")
+        path = request.query_params.get("path")
+        ref = request.query_params.get("ref", "HEAD")
+        if not host or not path:
+            return err("missing ?host= or ?path=", 400)
+        if not REF_RE.match(ref):
+            return err(f"invalid ref {ref!r}", 400)
+        fs = self.backend(host)
+        try:
+            rp = await fs.realpath(path)
+            rc, out, errtxt = await fs.run_argv(
+                [*GIT, "-C", posixpath.dirname(rp), "rev-parse", "--show-toplevel"])
+            if rc == 127 or "command not found" in errtxt:
+                return JSONResponse({"error": "git not available on host",
+                                     "reason": "no_git"}, status_code=502)
+            if rc != 0:
+                return JSONResponse({"error": errtxt.strip() or "not a git repository",
+                                     "reason": "not_a_repo"}, status_code=404)
+            toplevel = out.decode("utf-8", "replace").strip()
+            relpath = posixpath.relpath(rp, toplevel)
+            rc, out, errtxt = await fs.run_argv(
+                [*GIT, "-C", toplevel, "show", f"{ref}:{relpath}"])
+            if rc != 0:
+                return JSONResponse({"error": errtxt.strip() or f"{relpath} not in {ref}",
+                                     "reason": "not_in_ref"}, status_code=404)
+            if len(out) > MAX_DIFF:
+                return err(f"{ref}:{relpath} is {len(out)} bytes — too large to diff", 413)
+            if b"\x00" in out:
+                return JSONResponse({"error": "binary file", "reason": "binary"},
+                                    status_code=415)
+        except FileNotFoundError:  # local host without git installed
+            return JSONResponse({"error": "git not available on host",
+                                 "reason": "no_git"}, status_code=502)
+        except FS_ERRORS as e:
+            return err(e)
+        return JSONResponse({"content": out.decode("utf-8", "replace"),
+                             "toplevel": toplevel, "relpath": relpath, "ref": ref})
 
     async def watch(self, request: Request) -> Response:
         """SSE stream of change events for one file.

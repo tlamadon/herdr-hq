@@ -406,6 +406,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/fs/ls", files.ls),
         Route("/api/fs/file", files.file),
         Route("/api/fs/write", files.write, methods=["POST"]),
+        Route("/api/fs/git-show", files.git_show),
         Route("/api/fs/watch", files.watch),
         Route("/api/views", files.views_get),
         Route("/api/views/{vid:int}", files.views_delete, methods=["DELETE"]),
