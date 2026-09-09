@@ -12,6 +12,9 @@ const ui = {
   tiles: document.getElementById('tiles'),
   hostGrid: document.getElementById('hostGrid'),
   machinesNote: document.getElementById('machinesNote'),
+  accountsSection: document.getElementById('accountsSection'),
+  accountGrid: document.getElementById('accountGrid'),
+  accountsNote: document.getElementById('accountsNote'),
   projectGrid: document.getElementById('projectGrid'),
   projectsNote: document.getElementById('projectsNote'),
   agentsView: document.getElementById('agentsView'),
@@ -289,6 +292,93 @@ function meterRow(label, value, text) {
     el('div', { class: 'meter', role: 'img', 'aria-label': `${label} ${pct(value)}` }, [fill]),
     el('span', { class: 'meter-value', text }),
   ]);
+}
+
+/* "session" / "week" / "week (all models)" -> the short label on a meter row */
+function usageWindowLabel(label) {
+  if (!label) return '?';
+  if (label === 'session') return '5h';
+  if (label === 'week') return 'Week';
+  const m = label.match(/^week \((.+)\)$/);
+  if (m) return m[1] === 'all models' ? 'Week' : `Wk ${m[1]}`;
+  return label;
+}
+
+function fmtWhen(epoch) {
+  return new Date(epoch * 1000).toLocaleString([], {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
+function usageMeterRow(provider, w) {
+  // claude reset strings are host-local; the timezone parenthetical is too wide
+  const resets = w.resets_at ? fmtWhen(w.resets_at)
+    : (w.resets || '').replace(/\s*\([^)]*\)\s*$/, '');
+  const row = meterRow(usageWindowLabel(w.label), w.pct,
+    resets ? `${w.pct}% · resets ${resets}` : `${w.pct}%`);
+  row.title = `${provider} ${w.label}` + (resets ? `: resets ${w.resets || resets}` : '');
+  return row;
+}
+
+/* One entry per distinct provider+account across the fleet: the freshest
+   host's snapshot wins (the limits are account-wide, so hosts only disagree
+   by probe timing). Hosts that can't produce a snapshot become issue lines. */
+function collectAccounts(state) {
+  const groups = new Map();
+  const issues = [];
+  for (const host of state.hosts) {
+    const au = host.agent_usage;
+    if (!au) continue;
+    if (au.error) {
+      if (host.status === 'ok') issues.push(`${host.name}: ${au.error}`);
+      continue;
+    }
+    for (const [provider, key] of [['Claude', 'claude'], ['Codex', 'codex']]) {
+      const sec = au[key];
+      if (!sec) continue;
+      if (sec.error && !(sec.windows || []).length) {
+        issues.push(`${host.name}: ${provider} ${sec.error}`);
+        continue;
+      }
+      const email = sec.account?.email;
+      const gkey = `${key}:${email || `@${host.name}`}`; // no email -> can't merge
+      const fresh = sec.as_of ?? au.checked_at ?? 0;
+      let g = groups.get(gkey);
+      if (!g) { g = { provider, hosts: [], freshest: -1, best: null }; groups.set(gkey, g); }
+      g.hosts.push(host.name);
+      if (fresh > g.freshest) { g.freshest = fresh; g.best = { sec, checkedAt: au.checked_at, host: host.name }; }
+    }
+  }
+  return { accounts: [...groups.values()], issues };
+}
+
+function renderAccounts(state) {
+  const { accounts, issues } = collectAccounts(state);
+  ui.accountsSection.hidden = !accounts.length && !issues.length;
+  const bits = [];
+  if (accounts.length) bits.push(`${accounts.length} account${accounts.length === 1 ? '' : 's'}`);
+  bits.push(...issues);
+  ui.accountsNote.textContent = bits.join(' · ');
+
+  ui.accountGrid.replaceChildren(...accounts.map((g) => {
+    const { sec, checkedAt, host } = g.best;
+    const acct = sec.account || {};
+    // codex data is only as fresh as its last session; claude is probed live
+    const when = sec.as_of ? `as of ${ago(sec.as_of)}` : `checked ${ago(checkedAt)}`;
+    return el('div', { class: 'host-card account-card' }, [
+      el('div', { class: 'host-head' }, [
+        el('span', { class: 'host-name', text: g.provider }),
+        el('span', { class: 'host-badges' },
+          acct.plan ? [el('span', { class: 'badge', text: acct.plan })] : []),
+      ]),
+      el('div', { class: 'host-sub', text: acct.email || 'account unknown' }),
+      el('div', { class: 'meters' }, (sec.windows || []).map((w) => usageMeterRow(g.provider, w))),
+      el('div', { class: 'account-foot' }, [
+        el('span', { text: when }),
+        el('span', { class: 'account-hosts', text: `on ${g.hosts.join(', ')}` }),
+      ]),
+    ]);
+  }));
 }
 
 /* ---------------------------------------------------------- data shaping */
@@ -852,6 +942,7 @@ function render() {
   view.dupPorts = computeDupPorts(agents);
   renderSummary(state, agents);
   renderHosts(state);
+  renderAccounts(state);
   renderProjects(agents);
   renderChips(agents);
   writeUrl();

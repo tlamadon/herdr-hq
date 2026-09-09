@@ -35,13 +35,16 @@ def _script(name: str) -> str:
 class HostPoller:
     """Polls one host on a loop, keeping the latest snapshot and a short history."""
 
-    def __init__(self, spec: HostSpec, cfg: Config, source: str, pool: SSHPool):
+    def __init__(self, spec: HostSpec, cfg: Config, source: str, pool: SSHPool,
+                 usage_source: str = ""):
         self.spec = spec
         self.cfg = cfg
         self.source = source
+        self.usage_source = usage_source
         self.name = spec.name
         self.transport = make_transport(pool, spec.transport, spec.ssh_target, spec.python)
         self.wake = asyncio.Event()
+        self.usage_wake = asyncio.Event()
         self.stopping = asyncio.Event()
         self.events_status: str | None = None  # set by the event bridge
         self.hub = None  # EventHub when push is enabled; polls announce themselves
@@ -140,6 +143,42 @@ class HostPoller:
         )
         log.warning("%s: %s", self.name, error)
 
+    # -- claude usage limits -------------------------------------------------
+
+    async def usage_once(self) -> None:
+        """Probe the host's Claude account limits; failures land in the payload."""
+        try:
+            rc, out, err = await self.transport.run(
+                self.usage_source, [], self.cfg.usage_timeout,
+            )
+            out = out.strip()
+            if not out:
+                data = {"error": err.strip()[:400] or f"no output (exit {rc})"}
+            else:
+                data = json.loads(out)
+                if data.get("fatal"):
+                    data = {"error": str(data["fatal"])}
+        except asyncio.TimeoutError:
+            data = {"error": "timed out"}
+        except (OSError, asyncssh.Error, json.JSONDecodeError) as exc:
+            data = {"error": str(exc) or type(exc).__name__}
+        data["checked_at"] = time.time()
+        self.state["agent_usage"] = data
+        if data.get("error"):
+            log.debug("%s: usage probe: %s", self.name, data["error"])
+        if self.hub is not None:
+            self.hub.publish({"type": "host", "host": self.name})
+
+    async def run_usage(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                await self.usage_once()
+            except Exception as exc:  # noqa: BLE001 - a poller must never die
+                log.warning("%s: usage probe unexpected %r", self.name, exc)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.usage_wake.wait(), self.cfg.usage_interval)
+            self.usage_wake.clear()
+
     # -- loop ----------------------------------------------------------------
 
     def interval(self) -> float:
@@ -175,8 +214,12 @@ class Fleet:
         self.cfg = cfg
         self.pool = pool
         source = _script("collector.py")
+        usage_source = _script("usage.py")
         self.attach_source = _script("attach.py")
-        self.pollers = [HostPoller(spec, cfg, source, pool) for spec in cfg.hosts.values()]
+        self.pollers = [
+            HostPoller(spec, cfg, source, pool, usage_source=usage_source)
+            for spec in cfg.hosts.values()
+        ]
         self.by_name = {p.name: p for p in self.pollers}
         self.sessions: dict[tuple[str, str], TerminalSession] = {}
         self.session_lock = asyncio.Lock()
@@ -185,6 +228,10 @@ class Fleet:
     def start(self) -> None:
         for poller in self.pollers:
             self.tasks.append(asyncio.create_task(poller.run(), name=f"poll-{poller.name}"))
+            if self.cfg.usage_enabled:
+                self.tasks.append(
+                    asyncio.create_task(poller.run_usage(), name=f"usage-{poller.name}")
+                )
         self.tasks.append(asyncio.create_task(self._reap_sessions(), name="term-reaper"))
 
     async def stop(self) -> None:
@@ -250,6 +297,7 @@ class Fleet:
     def refresh(self) -> None:
         for poller in self.pollers:
             poller.wake.set()
+            poller.usage_wake.set()
 
     def state(self) -> dict:
         return {

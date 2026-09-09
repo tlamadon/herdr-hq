@@ -277,6 +277,16 @@ main {
 .host-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .host-stat-value { font-size: 13px; font-variant-numeric: tabular-nums; }
 
+.account-card { gap: 10px; }
+.account-card .meter-label { width: 56px; }
+.account-card .meter-value { width: 128px; }
+.account-foot {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11px; color: var(--muted);
+}
+.account-foot span:first-child { white-space: nowrap; }
+.account-hosts { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ------------------------------------------------------------- projects */
 
 .project-card { gap: 10px; }

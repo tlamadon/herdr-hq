@@ -29,6 +29,10 @@ Example:
     events:
       enabled: true             # push bridge via herdr events.subscribe
 
+    usage:
+      enabled: true             # probe Claude/Codex usage limits per host
+      interval: 900             # seconds between probes
+
     hosts:
       local:
         transport: local        # runs the collector on this machine
@@ -100,6 +104,9 @@ class Config:
     terminal_interval: float = 0.025  # fast mirror poll while a pane is active (~40 Hz)
     terminal_max_sessions: int = 6
     events_enabled: bool = True
+    usage_enabled: bool = True  # probe Claude/Codex usage limits per host
+    usage_interval: float = 900.0  # seconds between usage probes
+    usage_timeout: float = 30.0
     hosts: dict[str, HostSpec] = field(default_factory=dict)
     path: Path | None = None
 
@@ -163,6 +170,11 @@ def _parse(data: dict, path: Path | None) -> Config:
 
     events = data.get("events") or {}
     cfg.events_enabled = bool(events.get("enabled", cfg.events_enabled))
+
+    usage = data.get("usage") or {}
+    cfg.usage_enabled = bool(usage.get("enabled", cfg.usage_enabled))
+    cfg.usage_interval = float(usage.get("interval", cfg.usage_interval))
+    cfg.usage_timeout = float(usage.get("timeout", cfg.usage_timeout))
 
     for name, spec in (data.get("hosts") or {}).items():
         cfg.hosts[str(name)] = _parse_host(name, spec)

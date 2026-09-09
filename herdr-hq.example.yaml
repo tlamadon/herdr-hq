@@ -23,6 +23,11 @@ terminal:
 events:
   enabled: true               # push updates via herdr events.subscribe
 
+usage:
+  enabled: true               # show Claude/Codex usage limits on each host card
+  interval: 900               # seconds between usage probes
+  # timeout: 30
+
 # SSH authentication is whatever plain `ssh <target>` does: ~/.ssh/config,
 # known_hosts and the ssh-agent are read directly. You must have connected to
 # each host at least once (known_hosts entry).

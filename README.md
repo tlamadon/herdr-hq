@@ -245,6 +245,8 @@ the rest of the fleet keeps updating.
   CPU (in cores) and memory the agents are consuming across all machines.
 - **Machines** — per host: CPU / RAM / disk meters, a CPU sparkline, load, uptime,
   agent count, herdr version, poll latency, and every port herdr's panes are listening on.
+- **Accounts** — one card per Claude / Codex account across the fleet, with its
+  usage-limit meters and the machines it is logged into (see below).
 - **Projects** — the same agents rolled up by repository, so you see the work rather than
   the hardware. A project spans machines (`dotfiles` checked out on two boxes is one card);
   a *checkout* does not, so the main clone and each linked worktree are listed separately
@@ -259,6 +261,31 @@ the rest of the fleet keeps updating.
 Status comes straight from herdr: `working`, `blocked` (waiting on you), `idle`, `done`,
 `unknown`. Each is shown with an icon and a label, never colour alone.
 
+### Claude & Codex usage limits
+
+The **Accounts** section shows one card per distinct agent account (email + plan) with
+its usage-limit windows — the 5-hour session and weekly percentages — and reset times.
+Every host is probed, but since the limits are account-wide, hosts sharing an account
+are merged into one card (freshest snapshot wins) listing the machines it is logged
+into. Hosts that can't produce a snapshot ("not logged in", parse failures) surface as
+a note in the section header. Nothing is installed on the hosts: a probe script
+(`remote/usage.py`) is piped over ssh every 15 minutes.
+
+- **Claude** — runs `claude auth status` plus `claude -p /usage --output-format json`,
+  which costs no quota (it makes no model call). Fresh at every probe
+  ("checked … ago").
+- **Codex** — no CLI call at all: the newest `~/.codex/sessions/**.jsonl` rollout
+  records a rate-limit snapshot with each API response, and `auth.json`'s identity
+  claims name the account. Only as fresh as the last Codex session ("as of … ago").
+
+Hosts without a given agent show nothing for it; hosts that aren't logged in say so.
+
+Caveats: neither source is a documented API — if the `/usage` text or the rollout
+format changes, the card degrades to an error line until the parser is updated. The
+Claude probe records a throwaway session per run; these are confined to
+`~/.cache/herdr-hq/usage` project logs and pruned after a day. Tune or disable via
+the `usage:` config section (`enabled`, `interval`, `timeout`).
+
 ## Layout
 
 ```
@@ -272,6 +299,7 @@ src/herdrhq/
   config.py            YAML config (+ legacy config.json migration)
   remote/collector.py  runs on each machine; prints one JSON blob (stdlib only)
   remote/attach.py     runs on each machine; mirrors one pane, forwards keys
+  remote/usage.py      runs on each machine; Claude/Codex accounts + usage limits
   static/              index.html, style.css, app.js, term.js, vendor/xterm.js
 herdr-hq.example.yaml  commented config template
 ```
