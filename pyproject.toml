@@ -1,6 +1,6 @@
 [project]
 name = "herdr-hq"
-version = "0.3.0"
+version = "0.3.1"
 description = "Fleet dashboard for herdr agents: monitoring, remote files, live previews"
 readme = "README.md"
 license = { file = "LICENSE" }
