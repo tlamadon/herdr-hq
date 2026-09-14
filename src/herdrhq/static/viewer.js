@@ -16,6 +16,9 @@ document.getElementById('fname').title = path || '';
 document.getElementById('hostchip').textContent = host || '';
 const dirName = (path || '').replace(/\/[^/]+$/, '') || '/';
 document.getElementById('folderLink').href = `/browse?${qs({ host, path: dirName })}`;
+const downloadLink = document.getElementById('downloadLink');
+downloadLink.href = `/api/fs/file?${qs({ host, path })}`;
+downloadLink.setAttribute('download', base);
 
 initTheme();
 
@@ -71,6 +74,13 @@ function setStatus(state, label) {
   statusLabel.textContent = label;
 }
 
+// Smooth scrollIntoView stalls on canvas-heavy PDF pages in Chrome; compute
+// the target offset and jump the scroll container directly instead.
+function scrollToPage(div) {
+  const top = div.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop - 12;
+  scroll.scrollTo({ top: Math.max(0, top) });
+}
+
 // PDF hyperlinks are annotations, not page graphics; overlay each canvas
 // with real <a> elements so they stay clickable.
 async function addLinks(doc, page, vp, div, pageDivs) {
@@ -95,7 +105,7 @@ async function addLinks(doc, page, vp, div, pageDivs) {
         const dest = typeof a.dest === 'string' ? await doc.getDestination(a.dest) : a.dest;
         if (!dest) return;
         const idx = await doc.getPageIndex(dest[0]);
-        pageDivs[idx]?.scrollIntoView({ behavior: 'smooth' });
+        if (pageDivs[idx]) scrollToPage(pageDivs[idx]);
       });
     }
     div.appendChild(link);
@@ -214,6 +224,53 @@ async function renderText(url) {
   return `${nLines} lines · ${lang}`;
 }
 
+/* ------------------------------------------------- table of contents (PDF outline) */
+
+const tocEl = document.getElementById('toc');
+const tocBtn = document.getElementById('tocBtn');
+const TOC_KEY = 'herdr-hq.viewer.toc';
+let tocOpen = localStorage.getItem(TOC_KEY) !== '0';
+
+function setTocOpen(open) {
+  tocOpen = open;
+  tocEl.hidden = !open;
+  tocBtn.classList.toggle('on', open);
+  try { localStorage.setItem(TOC_KEY, open ? '1' : '0'); } catch (_) { /* private mode */ }
+}
+tocBtn.addEventListener('click', () => setTocOpen(tocEl.hidden));
+
+// Rebuilt on every render: outline destinations and pageDivs belong to the
+// document instance they were made from.
+async function buildToc(doc, pageDivs) {
+  const outline = await doc.getOutline().catch(() => null);
+  tocEl.replaceChildren();
+  if (!outline || !outline.length) {
+    tocBtn.hidden = true;
+    tocEl.hidden = true;
+    return;
+  }
+  const add = (items, depth) => {
+    for (const it of items || []) {
+      const a = el('a', { class: 'toc-item', href: '#' });
+      a.textContent = it.title || '(untitled)';
+      a.title = it.title || '';
+      a.style.paddingLeft = `${12 + depth * 14}px`;
+      a.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        const dest = typeof it.dest === 'string' ? await doc.getDestination(it.dest) : it.dest;
+        if (!dest) return;
+        const idx = await doc.getPageIndex(dest[0]).catch(() => null);
+        if (idx != null && pageDivs[idx]) scrollToPage(pageDivs[idx]);
+      });
+      tocEl.appendChild(a);
+      add(it.items, depth + 1);
+    }
+  };
+  add(outline, 0);
+  tocBtn.hidden = false;
+  setTocOpen(tocOpen);
+}
+
 async function renderPdf(url) {
   const doc = await pdfjsLib.getDocument(url).promise;
   const next = el('div', { class: 'pageset' });
@@ -239,6 +296,7 @@ async function renderPdf(url) {
     pageDivs.push(div);
   }
   swap(next);
+  await buildToc(doc, pageDivs);
   return `${doc.numPages} page${doc.numPages === 1 ? '' : 's'}`;
 }
 

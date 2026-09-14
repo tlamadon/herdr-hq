@@ -18,11 +18,16 @@
     <span class="viewer-fname" id="fname"></span>
     <span class="badge" id="hostchip"></span>
     <a class="viewer-folder" id="folderLink" href="#" title="open the containing folder">🗀 folder</a>
+    <a class="viewer-folder" id="downloadLink" href="#" title="download this file">⤓ download</a>
+    <button id="tocBtn" class="viewer-btn" type="button" title="table of contents" hidden>☰ contents</button>
     <span class="viewer-spacer"></span>
     <span id="editActions" class="viewer-actions"></span>
     <span id="meta" class="viewer-meta"></span>
   </header>
-  <div id="scroll" class="viewer-scroll"><div class="pageset"><div class="note">loading…</div></div></div>
+  <div class="viewer-main">
+    <nav id="toc" class="viewer-toc" hidden></nav>
+    <div id="scroll" class="viewer-scroll"><div class="pageset"><div class="note">loading…</div></div></div>
+  </div>
 
   <script src="/static/shared.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
