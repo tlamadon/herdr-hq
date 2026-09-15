@@ -280,6 +280,27 @@ function renderSidebar() {
 
 /* --------------------------------------------------- selection + header */
 
+/** A closed pane or checkout must not strand the center pane: when the fresh
+    model no longer resolves the selection, move it somewhere real — the same
+    checkout's surviving panes, else the first project, else the machine's
+    loose panes. Returns true when it re-selected (and thus re-rendered). */
+function revalidateSelection() {
+  if (!state.sel.host || !state.model) return false;
+  if (state.sel.top && !state.model.checkouts.has(`${state.sel.host}|${state.sel.top}`)) {
+    const first = [...state.model.projects.values()][0]?.[0];
+    if (first) select(first.host, first.top, null, null);
+    else select(state.sel.host, '', null, null);
+    return true;
+  }
+  const panes = currentPanes();
+  if ((state.sel.pane && !panes.some((p) => p.pane_id === state.sel.pane))
+      || (!state.sel.pane && panes.length)) {
+    select(state.sel.host, state.sel.top, state.sel.pane, null);
+    return true;
+  }
+  return false;
+}
+
 function select(host, top, pane, tab, { push = true } = {}) {
   const changedTarget = host !== state.sel.host || top !== state.sel.top;
   state.sel.host = host;
@@ -356,7 +377,7 @@ function renderHeader() {
     }),
     dirtyMark(cg),
     ...abMarks(cg),
-  ] : [el('span', { class: 'crumb-sub', text: state.sel.host })]));
+  ].filter(Boolean) : [el('span', { class: 'crumb-sub', text: state.sel.host })]));
 
   // mode toggle
   const modes = [];
@@ -768,6 +789,7 @@ async function fetchState() {
     const firstHost = [...state.model.machines.values()].find((m) => m.panes.length);
     if (firstHost) { select(firstHost.host, '', null, 'term', { push: false }); return; }
   }
+  if (revalidateSelection()) return;  // select() already re-rendered
   // selection kept: refresh what depends on the model
   renderSidebar();
   renderHeader();
