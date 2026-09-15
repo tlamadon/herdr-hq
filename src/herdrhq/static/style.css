@@ -504,7 +504,7 @@ body.is-modal { overflow: hidden; }
 .term-body {
   flex: 1; min-height: 0; overflow: hidden;
   padding: 12px 14px;
-  background: #161615;   /* the terminal is always dark (see termcore.js) */
+  background: var(--term-bg);   /* follows the theme; palettes in termcore.js */
 }
 .term-body .xterm-viewport { background: transparent !important; }
 .term-mount { width: 100%; height: 100%; }
@@ -1025,11 +1025,11 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .work-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .work-content[hidden] { display: none; }
 /* full-bleed terminal: snap to the panel edges, no frame — just a small inner
-   padding so text isn't glued to the edge. The dark background fills the whole
-   surface (not just the grid's max-content width). */
+   padding so text isn't glued to the edge. The terminal background fills the
+   whole surface (not just the grid's max-content width). */
 .work-term {
   flex: 1; overflow: hidden; margin: 0; padding: 6px 8px;
-  background: #161615;   /* the terminal is always dark (see termcore.js) */
+  background: var(--term-bg);   /* follows the theme; palettes in termcore.js */
   border: 0; border-radius: 0;
 }
 .work-term .xterm { padding: 0; }

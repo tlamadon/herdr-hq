@@ -85,12 +85,13 @@ function termToOps(data) {
   return ops;
 }
 
-// The terminal is always dark, independent of the app theme: herdr's panes
-// (like any TUI) author their ANSI colours — including background blocks in
-// diffs and menus — for a dark terminal, so a light background renders them
-// wrong. This is also the conventional terminal feel.
+// The terminal follows the app theme. TUIs author ANSI colours with a dark
+// terminal in mind, so the light palette leans high-contrast to compensate;
+// minimumContrastRatio stays 1 — we trust the palettes, not auto-nudging.
 function termTheme() {
-  return TERM_THEME_DARK;
+  const t = document.documentElement.dataset.theme
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  return t === 'light' ? TERM_THEME_LIGHT : TERM_THEME_DARK;
 }
 
 // Full 16-colour ANSI palettes — without these, every coloured byte an agent
@@ -134,6 +135,12 @@ function createMirror({ mount, onStatus, onNote, getAllowInput }) {
   };
 
   const setStatus = (text, kind) => onStatus?.(text, kind);
+
+  // follow the theme toggle (data-theme flips) and the OS preference live
+  const retheme = () => { if (state.xterm) state.xterm.options.theme = termTheme(); };
+  new MutationObserver(retheme).observe(document.documentElement,
+    { attributes: true, attributeFilter: ['data-theme'] });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', retheme);
 
   function ensureTerm() {
     if (state.xterm) return state.xterm;
