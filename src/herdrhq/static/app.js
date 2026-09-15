@@ -105,27 +105,42 @@ function dirtyCount(g) {
   return (g.staged || 0) + (g.unstaged || 0) + (g.untracked || 0) + (g.conflicts || 0);
 }
 
-/** One compact line: repo · branch · worktree · ahead/behind · dirty. */
+function branchLabel(g) {
+  return g.worktree ? `⌥ ${branchName(g)}` : branchName(g);
+}
+
+/** ±N ↑a ↓b marks, sidebar-style: quiet dirt, amber sync, red conflicts;
+    absence means clean / in sync. */
+function gitMarks(g) {
+  return [
+    g.dirty ? el('span', {
+      class: `git-dirty${g.conflicts ? ' has-conflicts' : ''}`,
+      text: `±${dirtyCount(g)}`, title: dirtyText(g),
+    }) : null,
+    g.ahead ? el('span', {
+      class: 'git-ab', text: `↑${g.ahead}`,
+      title: `${g.ahead} commit${g.ahead === 1 ? '' : 's'} to push`,
+    }) : null,
+    g.behind ? el('span', {
+      class: 'git-ab', text: `↓${g.behind}`,
+      title: `${g.behind} commit${g.behind === 1 ? '' : 's'} to pull`,
+    }) : null,
+  ].filter(Boolean);
+}
+
+/** One compact line: repo · branch ±N ↑a ↓b. */
 function gitLine(g) {
   if (!g) return null;
-  const parts = [
+  return el('div', { class: 'git-line' }, [
     el('span', { class: 'git-repo', text: g.repo_name, title: g.repo }),
     el('span', { class: 'git-sep', text: '·' }),
-    el('span', { class: 'git-branch', text: branchName(g), title: g.upstream || 'no upstream' }),
-  ];
-  if (g.worktree) {
-    // the name is nearly always a slug of the branch, so the tag just flags the kind
-    parts.push(el('span', { class: 'git-tag', text: 'worktree', title: `linked worktree at ${g.toplevel}` }));
-  }
-  if (g.ahead) parts.push(el('span', { class: 'git-ahead', text: `↑${g.ahead}` , title: `${g.ahead} commit(s) ahead of ${g.upstream}` }));
-  if (g.behind) parts.push(el('span', { class: 'git-behind', text: `↓${g.behind}`, title: `${g.behind} commit(s) behind ${g.upstream}` }));
-  if (!g.detached && !g.upstream) parts.push(el('span', { class: 'git-muted', text: 'no upstream' }));
-  parts.push(el('span', {
-    class: g.dirty ? 'git-dirty' : 'git-muted',
-    text: g.dirty ? `● ${dirtyCount(g)} changed` : 'clean',
-    title: dirtyText(g),
-  }));
-  return el('div', { class: 'git-line' }, parts);
+    el('span', {
+      class: 'git-branch', text: branchLabel(g),
+      title: [g.worktree ? `linked worktree at ${g.toplevel}` : null,
+              g.upstream || 'no upstream'].filter(Boolean).join(' — '),
+    }),
+    ...gitMarks(g),
+  ]);
 }
 
 /* Listening ports. A port is only clickable when the dashboard can actually reach
@@ -304,16 +319,26 @@ function usageWindowLabel(label) {
   return label;
 }
 
+/* the meter-value column is narrow: time when under a day away, date beyond */
 function fmtWhen(epoch) {
-  return new Date(epoch * 1000).toLocaleString([], {
-    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
+  const d = new Date(epoch * 1000);
+  if (d - Date.now() < 20 * 3600e3)
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/* claude resets come as host-local text ("Sep 9 at 6:09pm (America/Chicago)");
+   shed the parenthetical and apply the same near/far split as fmtWhen */
+function compactResets(s) {
+  s = s.replace(/\s*\([^)]*\)\s*$/, '').replace(/\s+at\s+/, ' ');
+  const m = s.match(/^([A-Z][a-z]{2,} \d{1,2}),?\s+(.+)$/);
+  if (!m) return s;
+  const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return m[1] === today ? m[2] : m[1];
 }
 
 function usageMeterRow(provider, w) {
-  // claude reset strings are host-local; the timezone parenthetical is too wide
-  const resets = w.resets_at ? fmtWhen(w.resets_at)
-    : (w.resets || '').replace(/\s*\([^)]*\)\s*$/, '');
+  const resets = w.resets_at ? fmtWhen(w.resets_at) : compactResets(w.resets || '');
   const row = meterRow(usageWindowLabel(w.label), w.pct,
     resets ? `${w.pct}% · resets ${resets}` : `${w.pct}%`);
   row.title = `${provider} ${w.label}` + (resets ? `: resets ${w.resets || resets}` : '');
@@ -587,17 +612,10 @@ function statusRow(counts) {
 function checkoutRow(c, showHost) {
   const g = c.git;
   return el('div', { class: 'checkout-row' }, [
-    el('span', { class: 'git-branch', text: branchName(g), title: g.toplevel }),
-    g.worktree ? el('span', { class: 'git-tag', text: 'worktree', title: `linked worktree at ${g.toplevel}` }) : null,
+    el('span', { class: 'git-branch', text: branchLabel(g), title: g.toplevel }),
     showHost ? el('span', { class: 'badge', text: c.host }) : null,
     el('span', { class: 'checkout-spacer' }),
-    g.ahead ? el('span', { class: 'git-ahead', text: `↑${g.ahead}` }) : null,
-    g.behind ? el('span', { class: 'git-behind', text: `↓${g.behind}` }) : null,
-    el('span', {
-      class: g.dirty ? 'git-dirty' : 'git-muted',
-      text: g.dirty ? `● ${dirtyCount(g)}` : 'clean',
-      title: dirtyText(g),
-    }),
+    ...gitMarks(g),
     el('span', { class: 'checkout-agents', text: `${c.agents} ${c.agents === 1 ? 'agent' : 'agents'}` }),
   ].filter(Boolean));
 }
@@ -870,13 +888,13 @@ function renderTable(rows) {
     }),
     el('td', { text: g ? g.repo_name : '–', title: g ? g.repo : '' }),
     el('td', {}, [
-      el('span', { class: 'git-branch', text: g ? branchName(g) : '–' }),
-      g?.worktree ? el('span', { class: 'git-tag', text: g.worktree_name, title: g.toplevel }) : null,
-    ].filter(Boolean)),
+      el('span', { class: 'git-branch', text: g ? branchLabel(g) : '–',
+        title: g?.worktree ? g.toplevel : '' }),
+    ]),
     el('td', { class: 'num', text: sync }),
     el('td', {
-      class: g?.dirty ? 'git-dirty' : 'git-muted',
-      text: g ? (g.dirty ? `${dirtyCount(g)} changed` : 'clean') : '',
+      class: g?.dirty ? `git-dirty${g.conflicts ? ' has-conflicts' : ''}` : 'git-muted',
+      text: g?.dirty ? `±${dirtyCount(g)}` : '',
       title: g ? dirtyText(g) : '',
     }),
     el('td', {}, (r.ports || []).map((s) => portChip(s, r.hostMeta, r))),

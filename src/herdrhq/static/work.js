@@ -1,11 +1,11 @@
 /* herdr HQ — workspace view.
  *
- * Left: projects expanding into checkouts (worktree @ machine) and machines
- * with their loose panes. Center: the selected checkout's panes as tabs, each
- * a live terminal mirror; agent panes toggle to a chat rendering of their
- * session (markdown + math + highlighted code) with a composer that types
- * into the live pane. Right: files the agent touched, listening ports,
- * live views and tunnels.
+ * Left: a flat list of checkouts ("repo @ machine" over its branch) and
+ * machines holding loose panes. Center: the
+ * selected checkout's panes as tabs above a live terminal mirror; agent panes
+ * toggle to a chat rendering of their session (markdown + math + highlighted
+ * code) with a composer that types into the live pane. Right: files the agent
+ * touched, listening ports, live views and tunnels.
  */
 
 const ui = {
@@ -50,7 +50,6 @@ const state = {
   fleet: null,
   model: null,            // {checkouts, projects, machines}
   sel: { host: null, top: null, pane: null, tab: 'term' },
-  expanded: new Set(),    // 'proj:<repo>' / 'host:<name>'
   allowInput: true,
   filesPath: null,
   chat: { stamp: null, pinned: true, timer: null, files: [] },
@@ -198,71 +197,71 @@ function statusDots(panes) {
     ])));
 }
 
-function caretRow({ id, label, extra, dots, children }) {
-  const open = state.expanded.has(id);
-  const row = el('button', {
-    class: 'tree-row tree-parent', type: 'button', 'aria-expanded': String(open),
-    onclick: () => {
-      if (state.expanded.has(id)) state.expanded.delete(id);
-      else state.expanded.add(id);
-      renderSidebar();
-    },
-  }, [
-    el('span', { class: 'tree-caret', 'aria-hidden': 'true', text: open ? '▾' : '▸' }),
-    el('span', { class: 'tree-label', text: label }),
-    extra ? el('span', { class: 'tree-extra', text: extra }) : null,
-    dots,
-  ]);
-  const box = el('div', { class: 'tree-group' }, [row]);
-  if (open) box.append(...children);
-  return box;
+function abMarks(g) {
+  return [
+    g.ahead ? el('span', {
+      class: 'tree-ab', text: `↑${g.ahead}`,
+      title: `${g.ahead} commit${g.ahead === 1 ? '' : 's'} to push`,
+    }) : null,
+    g.behind ? el('span', {
+      class: 'tree-ab', text: `↓${g.behind}`,
+      title: `${g.behind} commit${g.behind === 1 ? '' : 's'} to pull`,
+    }) : null,
+  ].filter(Boolean);
 }
 
-/** A checkout node: its branch, expandable to the panes inside it. */
-function checkoutNode(co, only) {
-  const id = `co:${co.host}|${co.top}`;
-  const onThis = state.sel.host === co.host && state.sel.top === co.top;
-  const open = state.expanded.has(id) || onThis || only;
-  const label = [co.git.branch || 'detached', co.git.worktree ? '⌥' : '']
-    .filter(Boolean).join(' ');
-  const caret = el('span', {
-    class: 'tree-caret', 'aria-hidden': 'true', text: open ? '▾' : '▸',
-    onclick: (ev) => {
-      ev.stopPropagation();
-      if (state.expanded.has(id)) state.expanded.delete(id);
-      else state.expanded.add(id);
-      renderSidebar();
-    },
+/** Uncommitted content as a quiet "±N files" mark — dirt is the norm on an
+    active checkout, so it stays muted; only conflicts turn it red. */
+function dirtyMark(g) {
+  if (!g.dirty) return null;
+  const bits = [];
+  if (g.staged) bits.push(`${g.staged} staged`);
+  if (g.unstaged) bits.push(`${g.unstaged} modified`);
+  if (g.untracked) bits.push(`${g.untracked} untracked`);
+  if (g.conflicts) bits.push(`${g.conflicts} conflicted`);
+  const n = (g.staged || 0) + (g.unstaged || 0) + (g.untracked || 0) + (g.conflicts || 0);
+  return el('span', {
+    class: `tree-dirty${g.conflicts ? ' has-conflicts' : ''}`,
+    text: `±${n}`, title: bits.join(' · '),
   });
-  const row = el('button', {
-    class: `tree-row tree-parent tree-checkout${onThis && !state.sel.pane ? ' is-selected' : ''}`,
-    type: 'button', 'aria-expanded': String(open),
-    title: `${co.top} on ${co.host}`,
-    onclick: () => { state.expanded.add(id); select(co.host, co.top, null, null); },
-  }, [
-    only ? null : caret,
-    el('span', { class: 'tree-label', text: label }),
-    el('span', { class: 'tree-host', text: co.host }),
-    statusDots(co.panes),
-  ].filter(Boolean));
-  const box = el('div', { class: 'tree-group' }, [row]);
-  if (open) box.append(...co.panes.map((p) => paneLeafRow(co.host, co.top, p, !only)));
-  return box;
 }
 
-function paneLeafRow(host, top, pane, deep) {
-  const selected = state.sel.host === host && state.sel.top === top
-    && state.sel.pane === pane.pane_id;
+/** Every checkout is one flat two-line entry — "repo @ machine" over the
+    branch (its worktree name when that says more); panes live in the tab bar. */
+function checkoutRow(co) {
+  const onThis = state.sel.host === co.host && state.sel.top === co.top;
+  const branch = co.git.branch || co.git.worktree_name || 'detached';
   return el('button', {
-    class: `tree-row tree-leaf${deep ? ' tree-leaf-deep' : ''}${selected ? ' is-selected' : ''}`,
+    class: `tree-row tree-entry tree-parent${onThis ? ' is-selected' : ''}`,
     type: 'button',
-    title: pane.title || pane.pane_id,
-    onclick: () => select(host, top, pane.pane_id, state.sel.tab === 'files' ? 'term' : null),
+    title: `${co.top} on ${co.host}`,
+    onclick: () => select(co.host, co.top, null, null),
   }, [
-    el('span', { class: `dot${pane.status === 'working' ? ' is-live' : ''}`, 'data-status': pane.is_agent ? pane.status : 'unknown' }),
-    el('span', { class: 'tree-label', text: pane.tabLabel || pane.title || (pane.is_agent ? pane.agent : 'shell') }),
-    el('span', { class: 'tree-host', text: pane.pane_id }),
+    el('span', { class: 'tree-line' }, [
+      el('span', { class: 'tree-label', text: co.repo }),
+      el('span', { class: 'tree-host', text: `@ ${co.host}` }),
+      statusDots(co.panes),
+    ]),
+    el('span', { class: 'tree-sub' }, [
+      el('span', { class: 'tree-branch', text: co.git.worktree ? `⌥ ${branch}` : branch }),
+      dirtyMark(co.git),
+      ...abMarks(co.git),
+    ]),
   ]);
+}
+
+function machineRow(m) {
+  const onThis = state.sel.host === m.host && !state.sel.top;
+  return el('button', {
+    class: `tree-row tree-parent${onThis ? ' is-selected' : ''}`,
+    type: 'button',
+    onclick: () => select(m.host, '', null, null),
+  }, [
+    el('span', { class: 'tree-label', text: m.host }),
+    m.down ? el('span', { class: 'tree-extra', text: 'unreachable' })
+      : (m.panes.length ? el('span', { class: 'tree-extra', text: `${m.panes.length}` }) : null),
+    statusDots(m.panes),
+  ].filter(Boolean));
 }
 
 function renderSidebar() {
@@ -270,25 +269,13 @@ function renderSidebar() {
   const projects = [...state.model.projects.entries()]
     .sort((a, b) => b[1].reduce((s, c) => s + c.panes.length, 0)
       - a[1].reduce((s, c) => s + c.panes.length, 0));
-  ui.projectTree.replaceChildren(...projects.map(([repo, cos]) => caretRow({
-    id: `proj:${repo}`,
-    label: repo,
-    extra: cos.length > 1 ? `${cos.length}` : null,
-    dots: statusDots(cos.flatMap((c) => c.panes)),
-    children: cos.map((c) => checkoutNode(c, cos.length === 1)),
-  })));
+  ui.projectTree.replaceChildren(...projects.flatMap(([, cos]) => cos.map(checkoutRow)));
   if (!projects.length) {
     ui.projectTree.replaceChildren(el('div', { class: 'empty-hint', text: 'No agents in any repository.' }));
   }
 
   const machines = [...state.model.machines.values()];
-  ui.machineTree.replaceChildren(...machines.map((m) => caretRow({
-    id: `host:${m.host}`,
-    label: m.host,
-    extra: m.down ? 'unreachable' : (m.panes.length ? `${m.panes.length}` : null),
-    dots: statusDots(m.panes),
-    children: m.panes.map((p) => paneLeafRow(m.host, '', p, false)),
-  })));
+  ui.machineTree.replaceChildren(...machines.map(machineRow));
 }
 
 /* --------------------------------------------------- selection + header */
@@ -307,11 +294,7 @@ function select(host, top, pane, tab, { push = true } = {}) {
   if (!tab) tab = state.sel.tab;
   if (tab === 'chat' && !(cur?.is_agent)) tab = 'term';
   state.sel.tab = tab || 'term';
-  if (changedTarget) {
-    state.filesPath = null;
-    if (top) state.expanded.add(`proj:${state.model?.checkouts.get(`${host}|${top}`)?.repo}`);
-    else state.expanded.add(`host:${host}`);
-  }
+  if (changedTarget) state.filesPath = null;
   if (push) writeUrl();
   renderSidebar();
   renderHeader();
@@ -319,35 +302,61 @@ function select(host, top, pane, tab, { push = true } = {}) {
   loadCtx();
 }
 
-/** Fill the single slim bar above the center: pane identity on the left, a
-    compact repo/branch context, then (in terminal mode) the terminal controls,
-    then the mode toggle. Pane selection lives in the sidebar tree. */
+/** Fill the single slim bar above the center: the selected checkout's panes
+    as tabs on the left, a compact repo/branch context, then (in terminal
+    mode) the terminal controls, then the mode toggle. */
 function renderHeader() {
   const cur = currentPane();
   const co = state.sel.top
     ? state.model?.checkouts.get(`${state.sel.host}|${state.sel.top}`) : null;
 
   if (!state.sel.host) {
-    ui.paneTabs.replaceChildren(el('span', { class: 'empty-hint', text: 'Pick a project, session or pane on the left.' }));
+    ui.paneTabs.replaceChildren(el('span', { class: 'empty-hint', text: 'Pick a project or machine on the left.' }));
     ui.workCrumb.replaceChildren();
     ui.workModes.replaceChildren();
     return;
   }
 
-  // identity — dot + label + (cross-repo tag) + pane id
-  ui.paneTabs.replaceChildren(...(cur ? [
-    el('span', { class: `dot${cur.status === 'working' ? ' is-live' : ''}`, 'data-status': cur.is_agent ? cur.status : 'unknown' }),
-    el('strong', { class: 'work-bar-label', text: cur.tabLabel || (cur.is_agent ? (cur.agent || 'agent') : 'shell') }),
-    cur.git && state.sel.top && cur.git.toplevel !== state.sel.top
-      ? el('span', { class: 'kindtag', text: cur.git.repo_name, title: cur.git.toplevel }) : null,
-    el('span', { class: 'work-tab-id', text: cur.pane_id }),
-  ].filter(Boolean) : [el('span', { class: 'empty-hint', text: 'No pane selected.' })]));
+  // tabs — one per pane; duplicated labels get the pane id to tell them apart
+  const panes = currentPanes();
+  const labelOf = (p) => p.tabLabel || (p.is_agent ? (p.agent || 'agent') : 'shell');
+  const counts = {};
+  for (const p of panes) counts[labelOf(p)] = (counts[labelOf(p)] || 0) + 1;
+  ui.paneTabs.replaceChildren(...(panes.length ? panes.map((p) => {
+    const label = labelOf(p);
+    const foreign = p.git && state.sel.top && p.git.toplevel !== state.sel.top;
+    return el('button', {
+      class: `work-tab${p.pane_id === state.sel.pane ? ' is-on' : ''}`,
+      type: 'button',
+      title: [p.title || label, p.pane_id, foreign ? `in ${p.git.repo_name}` : null]
+        .filter(Boolean).join(' · '),
+      onclick: () => select(state.sel.host, state.sel.top, p.pane_id,
+        state.sel.tab === 'files' ? 'term' : null),
+    }, [
+      el('span', { class: `dot${p.status === 'working' ? ' is-live' : ''}`, 'data-status': p.is_agent ? p.status : 'unknown' }),
+      el('span', { class: 'work-tab-label', text: label }),
+      counts[label] > 1 ? el('span', { class: 'work-tab-id', text: p.pane_id }) : null,
+    ].filter(Boolean));
+  }) : [el('span', { class: 'empty-hint', text: 'No panes here.' })]));
+  // reveal the active tab when the selection moves, but don't fight the user's
+  // own scrolling on live status re-renders
+  if (state.sel.pane && state.sel.pane !== renderHeader.scrolled) {
+    renderHeader.scrolled = state.sel.pane;
+    ui.paneTabs.querySelector('.is-on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 
-  // compact context — repo · branch @ host (+ dirty); the full path lives in Files
-  ui.workCrumb.replaceChildren(...[
-    el('span', { class: 'crumb-sub', text: co ? `${co.repo} · ${co.git.branch || 'detached'}${co.git.worktree ? ' ⌥' : ''} @ ${co.host}` : state.sel.host }),
-    co?.git.dirty ? el('span', { class: 'git-dirty crumb-sub', text: ' · dirty' }) : null,
-  ].filter(Boolean));
+  // compact context — repo @ host · branch ±N ↑↓; the full path lives in Files
+  const cg = co?.git;
+  ui.workCrumb.replaceChildren(...(co ? [
+    el('span', { class: 'crumb-sub', text: `${co.repo} @ ${co.host}` }),
+    el('span', { class: 'crumb-sub', text: '·' }),
+    el('span', {
+      class: 'git-branch',
+      text: (cg.worktree ? '⌥ ' : '') + (cg.branch || cg.worktree_name || 'detached'),
+    }),
+    dirtyMark(cg),
+    ...abMarks(cg),
+  ] : [el('span', { class: 'crumb-sub', text: state.sel.host })]));
 
   // mode toggle
   const modes = [];
@@ -596,7 +605,7 @@ function renderCtxFiles() {
   ui.ctxFiles.hidden = !files.length || !cur?.is_agent;
   if (ui.ctxFiles.hidden) return;
   const top = state.sel.top;
-  ui.ctxFileList.replaceChildren(...files.slice(0, 15).map((path) => {
+  ui.ctxFileList.replaceChildren(...files.slice(0, 30).map((path) => {
     const display = top && path.startsWith(`${top}/`) ? path.slice(top.length + 1) : shortPath(path, 3);
     return el('li', {}, [el('a', {
       href: `/view?${qs({ host: state.sel.host, path })}`,

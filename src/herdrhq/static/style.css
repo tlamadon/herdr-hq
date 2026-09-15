@@ -265,6 +265,7 @@ main {
 
 .meter-value {
   width: 112px; text-align: right; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
   font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-2);
 }
 
@@ -279,7 +280,7 @@ main {
 
 .account-card { gap: 10px; }
 .account-card .meter-label { width: 56px; }
-.account-card .meter-value { width: 128px; }
+.account-card .meter-value { width: 140px; }
 .account-foot {
   display: flex; justify-content: space-between; gap: 8px;
   font-size: 11px; color: var(--muted);
@@ -383,20 +384,10 @@ main {
 .git-repo { color: var(--ink-2); font-weight: 600; }
 .git-sep { color: var(--baseline); margin: 0 -3px; }
 .git-branch { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2); }
-.git-tag {
-  font-size: 10px; letter-spacing: .03em;
-  padding: 1px 5px; border-radius: 5px;
-  background: color-mix(in oklab, var(--series-7) 14%, var(--surface-2));
-  color: var(--series-7);
-  border: 1px solid color-mix(in oklab, var(--series-7) 30%, var(--border));
-  white-space: nowrap;
-}
-.git-ahead { color: var(--accent); }
-.git-behind { color: var(--serious); }
-.git-dirty { color: var(--warning); }
+.git-ab { color: var(--warning); }
+.git-dirty { color: var(--muted); }
+.git-dirty.has-conflicts { color: var(--critical); }
 .git-muted { color: var(--muted); }
-
-td .git-tag { margin-left: 6px; }
 
 .ports-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
 .ports-label {
@@ -941,7 +932,6 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   color: var(--muted); font-weight: 600; padding: 10px 10px 4px;
 }
 .work-tree { display: flex; flex-direction: column; gap: 1px; }
-.tree-group { display: flex; flex-direction: column; gap: 1px; }
 .tree-row {
   display: flex; align-items: center; gap: 7px; width: 100%;
   border: 0; background: none; color: var(--ink); text-align: left;
@@ -951,25 +941,30 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 .tree-row:hover { background: var(--surface-2); }
 .tree-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tree-parent .tree-label { font-weight: 600; }
-.tree-caret {
-  color: var(--muted); width: 12px; flex: none; font-size: 10px;
-  border: 0; background: none; padding: 0; cursor: pointer; line-height: 1;
+.tree-entry { flex-direction: column; align-items: stretch; gap: 1px; padding: 6px 10px; }
+.tree-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tree-sub {
+  display: flex; align-items: baseline; gap: 7px; min-width: 0;
+  font-size: 11px; color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.tree-checkout { padding-left: 24px; }
-.tree-checkout .tree-label { font-weight: 500; }
-.tree-leaf { padding-left: 28px; }
-.tree-leaf-deep { padding-left: 46px; }
+.tree-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-ab { flex: none; color: var(--warning); }
+.tree-dirty { flex: none; color: var(--muted); }
+.tree-dirty.has-conflicts { color: var(--critical); }
 .tree-row.is-selected { background: var(--accent); color: #fff; }
 .tree-row.is-selected .tree-host { color: rgba(255, 255, 255, 0.75); }
-.tree-row.is-selected .tree-caret { color: rgba(255, 255, 255, 0.75); }
+.tree-row.is-selected .tree-sub { color: rgba(255, 255, 255, 0.75); }
+.tree-row.is-selected .tree-ab { color: #fff; }
+.tree-row.is-selected .tree-dirty { color: rgba(255, 255, 255, 0.75); }
 .tree-label {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.tree-host { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); }
+.tree-host { flex: none; font-size: 10.5px; color: var(--muted); }
 .tree-extra { flex: none; font-size: 10.5px; color: var(--muted); }
 .tree-dots { display: inline-flex; gap: 4px; align-items: center; flex: none; margin-left: 4px; }
-.tree-checkout .tree-dots { margin-left: 0; }
+.tree-line .tree-dots { margin-left: auto; }
 .tree-dot-group { display: inline-flex; gap: 2px; align-items: center; }
 .tree-dot-n { font-size: 10px; color: var(--muted); }
 .tree-row.is-selected .dot { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8); }
@@ -985,18 +980,33 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   display: flex; align-items: center; gap: 10px; min-width: 0; flex: none;
   padding: 5px 12px; border-bottom: 1px solid var(--grid);
 }
-.work-bar-id {
-  display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: none;
-  color: var(--ink); font-size: 12.5px;
+/* pane tabs — scroll sideways when crowded, never wrap or push the controls */
+.work-tabs {
+  display: flex; align-items: center; gap: 3px; min-width: 0; flex: 0 1 auto;
+  overflow-x: auto; scrollbar-width: none;
 }
-.work-bar-label {
-  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  max-width: 32ch;
+.work-tabs::-webkit-scrollbar { display: none; }
+.work-tabs .empty-hint { padding: 3px 2px; white-space: nowrap; }
+.work-tab {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  border: 0; background: none; color: var(--ink); font: inherit; font-size: 12px;
+  padding: 3px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+}
+.work-tab:hover { background: var(--surface-2); }
+.work-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.work-tab.is-on { background: var(--accent); color: #fff; }
+.work-tab.is-on .dot { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.8); }
+.work-tab.is-on .work-tab-id { color: rgba(255, 255, 255, 0.75); }
+.work-tab-label {
+  overflow: hidden; text-overflow: ellipsis; max-width: 18ch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .work-bar-ctx {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 11.5px;
+  min-width: 0; flex: 0 3 auto; overflow: hidden;
+  display: flex; align-items: baseline; gap: 6px;
+  white-space: nowrap; font-size: 11.5px;
 }
+.work-bar-ctx .git-branch { overflow: hidden; text-overflow: ellipsis; }
 .work-bar-spacer { flex: 1; min-width: 8px; }
 .crumb-sub { color: var(--muted); font-size: 11.5px; }
 .work-tab-id {
