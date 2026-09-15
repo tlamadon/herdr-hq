@@ -73,55 +73,60 @@ def main() -> int:
     sock.settimeout(HEARTBEAT)
     try:
         sock.connect(path)
-        fh = sock.makefile("rwb")
         request = {
             "id": "hq-events",
             "method": "events.subscribe",
             "params": {"subscriptions": [{"type": t} for t in SUBSCRIPTIONS]},
         }
-        fh.write((json.dumps(request) + "\n").encode())
-        fh.flush()
+        sock.sendall((json.dumps(request) + "\n").encode())
     except OSError as exc:
         emit({"t": "error", "message": f"cannot reach herdr: {exc}"})
         return 1
 
     ready = False
     last_pane_update: dict[str, float] = {}  # pane_id -> last emit time
+    # Raw recv + manual line splitting, NOT sock.makefile(): a timeout on a
+    # buffered file object leaves it unusable ("cannot read from timed out
+    # object"), so the first quiet spell would kill the stream.
+    buf = b""
     try:
         while True:
             try:
-                line = fh.readline()
+                chunk = sock.recv(65536)
             except socket.timeout:
                 emit({"t": "idle"})
                 continue
-            if not line:
+            if not chunk:
                 emit({"t": "error", "message": "herdr closed the event stream"})
                 return 1
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not ready:
-                if msg.get("id") == "hq-events":
-                    if "error" in msg:
-                        detail = msg["error"].get("message", msg["error"])
-                        emit({"t": "error", "message": f"subscribe refused: {detail}"})
-                        return 1
-                    ready = True
-                    emit({"t": "ready"})
-                continue
-            kind = msg.get("event")
-            if not kind:
-                continue
-            if kind == "pane_updated":
-                pane = (msg.get("data") or {}).get("pane") or {}
-                pid = pane.get("pane_id")
-                now = time.monotonic()
-                if pid and now - last_pane_update.get(pid, 0) < COALESCE:
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
                     continue
-                if pid:
-                    last_pane_update[pid] = now
-            emit({"t": "event", "event": kind, "data": msg.get("data")})
+                if not ready:
+                    if msg.get("id") == "hq-events":
+                        if "error" in msg:
+                            detail = msg["error"].get("message", msg["error"])
+                            emit({"t": "error", "message": f"subscribe refused: {detail}"})
+                            return 1
+                        ready = True
+                        emit({"t": "ready"})
+                    continue
+                kind = msg.get("event")
+                if not kind:
+                    continue
+                if kind == "pane_updated":
+                    pane = (msg.get("data") or {}).get("pane") or {}
+                    pid = pane.get("pane_id")
+                    now = time.monotonic()
+                    if pid and now - last_pane_update.get(pid, 0) < COALESCE:
+                        continue
+                    if pid:
+                        last_pane_update[pid] = now
+                emit({"t": "event", "event": kind, "data": msg.get("data")})
     except (OSError, KeyboardInterrupt) as exc:
         emit({"t": "error", "message": f"event stream failed: {exc}"})
         return 1
