@@ -274,6 +274,7 @@ def test_parse_codex_tail_current_tool():
 def test_codex_find_by_cwd_and_id(tmp_path, monkeypatch):
     import asyncio
     import json as jsonlib
+    import os
 
     from herdrhq.files import LocalFs
     from herdrhq.transcript import TranscriptPeek
@@ -282,19 +283,27 @@ def test_codex_find_by_cwd_and_id(tmp_path, monkeypatch):
     d = tmp_path / ".codex" / "sessions" / "2026" / "09" / "04"
     d.mkdir(parents=True)
 
-    def rollout(name, cwd):
-        (d / name).write_text(jsonlib.dumps(
-            {"type": "session_meta", "payload": {"id": name, "cwd": cwd}}) + "\n")
+    def rollout(name, cwd, mtime, **meta):
+        p = d / name
+        p.write_text(jsonlib.dumps(
+            {"type": "session_meta", "payload": {"id": name, "cwd": cwd, **meta}}) + "\n")
+        os.utime(p, (mtime, mtime))
 
-    rollout("rollout-2026-09-04T10-00-00-aaa.jsonl", "/other/place")
-    rollout("rollout-2026-09-04T11-00-00-bbb.jsonl", "/work/proj")
+    t0 = 1_789_400_000
+    rollout("rollout-2026-09-04T10-00-00-aaa.jsonl", "/other/place", t0)
+    rollout("rollout-2026-09-04T11-00-00-bbb.jsonl", "/work/proj", t0 + 10)
+    # older name but freshest main-thread write: activity outranks the filename
+    rollout("rollout-2026-09-04T09-00-00-ccc.jsonl", "/work/proj", t0 + 100)
+    # a sub-thread rollout never matches a cwd guess, however fresh
+    rollout("rollout-2026-09-04T12-00-00-zzz.jsonl", "/work/proj", t0 + 200,
+            parent_thread_id="rollout-2026-09-04T09-00-00-ccc.jsonl")
 
     peek = TranscriptPeek(lambda host: LocalFs())
     pane = {"is_agent": True, "agent": "codex", "cwd": "/work/proj", "agent_session": None}
 
     async def go():
         path, reason, guessed, fmt = await peek.locate("local", pane)
-        assert path and path.endswith("bbb.jsonl") and guessed and fmt == "codex"
+        assert path and path.endswith("ccc.jsonl") and guessed and fmt == "codex"
         by_id = {"is_agent": True, "agent": "codex", "cwd": "/x",
                  "agent_session": {"kind": "id", "agent": "codex", "value": "aaa"}}
         path2, _, guessed2, fmt2 = await peek.locate("local", by_id)
@@ -333,3 +342,86 @@ def test_codex_head_cwd_truncated():
             b'"base_instructions":{"text":"You are Codex, based on GPT')
     assert _codex_head_cwd(head) == "/home/u/work tree"
     assert _codex_head_cwd(b"garbage") is None
+
+
+def test_codex_mentioned_files():
+    from herdrhq.transcript import codex_mentioned_files
+
+    blob = jl(
+        {"type": "response_item",
+         "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                     "input": 'text(await tools.exec_command({cmd:"cat notes.md README.md"}));'}},
+        {"type": "response_item",
+         "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c2",
+                     "input": 'tools.apply_patch("*** Begin Patch\\n*** Update File: /work/proj/plan.md\\n@@")'}},
+        {"type": "response_item",
+         "payload": {"type": "function_call", "name": "exec_command", "call_id": "c3",
+                     "arguments": '{"cmd": "rg -g \'!uv.lock\' TODO; open http://x.com/a.md; '
+                                  'cat > docs/day-2.md <<EOF\\nsee notes.md\\nEOF"}'}},
+    )
+    files = codex_mentioned_files(blob, "/work/proj")
+    # newest first; notes.md re-mentioned in c3 so it outranks README.md;
+    # the negated glob and the URL never make it in. Relative tokens fan out
+    # over cwd and the redirect target's dir — the wrong guesses (docs/docs/…)
+    # are junk the caller's stat filter drops.
+    assert files == [
+        "/work/proj/docs/notes.md",
+        "/work/proj/notes.md",
+        "/work/proj/docs/docs/day-2.md",
+        "/work/proj/docs/day-2.md",
+        "/work/proj/plan.md",
+        "/work/proj/README.md",
+    ]
+    # without a cwd only absolute paths survive
+    assert codex_mentioned_files(blob, None) == ["/work/proj/plan.md"]
+
+
+def test_codex_mentioned_files_link_bases_and_file_urls():
+    from herdrhq.transcript import codex_mentioned_files
+
+    blob = jl(
+        {"type": "response_item",
+         "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                     "input": '*** Begin Patch\n*** Update File: slides/intro.md\n'
+                              '+[next](session-1.html) and [lab](../labs/lab1.html)\n'
+                              '*** End Patch'}},
+        {"type": "response_item",
+         "payload": {"type": "function_call", "name": "exec_command", "call_id": "c2",
+                     "arguments": '{"cmd": "open file:///work/proj/slides/out.html"}'}},
+        {"type": "response_item",
+         "payload": {"type": "function_call", "name": "exec_command", "call_id": "c3",
+                     "arguments": '{"cmd": "cat > labs/README.md <<EOF\\n'
+                                  '[deck](../slides/session-2.html)\\nEOF"}'}},
+    )
+    files = codex_mentioned_files(blob, "/work/proj")
+    # markdown links resolve against the patched/redirected file's dir as
+    # well as cwd; the file:// URL survives the URL colon guard
+    for want in ("/work/proj/slides/intro.md",
+                 "/work/proj/slides/session-1.html",
+                 "/work/proj/labs/lab1.html",
+                 "/work/proj/slides/out.html",
+                 "/work/proj/labs/README.md",
+                 "/work/proj/slides/session-2.html"):
+        assert want in files
+    # the patched file's dir gives content links a home even without a cwd
+    assert "slides/lab1.html" not in files
+    files_nocwd = codex_mentioned_files(jl(
+        {"type": "response_item",
+         "payload": {"type": "custom_tool_call", "name": "exec", "call_id": "c3",
+                     "input": '*** Update File: /work/proj/docs/guide.md\n'
+                              '+see [logo](../assets/logo.png)'}}), None)
+    assert "/work/proj/assets/logo.png" in files_nocwd
+
+
+def test_existing_files_filters_and_caps(tmp_path):
+    import asyncio
+
+    from herdrhq.files import LocalFs
+    from herdrhq.transcript import existing_files
+
+    real = tmp_path / "a.md"
+    real.write_text("x")
+    kept = asyncio.run(existing_files(
+        LocalFs(), [str(real), str(tmp_path / "gone.md"), str(real)]))
+    assert kept == [str(real), str(real)]
+    assert asyncio.run(existing_files(LocalFs(), [str(real)], cap=0)) == []

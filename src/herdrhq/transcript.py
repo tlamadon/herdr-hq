@@ -13,8 +13,10 @@ degrades to explanatory absence rather than errors.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import posixpath
 import re
 from dataclasses import asdict, dataclass
 
@@ -235,6 +237,11 @@ def parse_claude_messages(blob: bytes, limit: int = CHAT_LIMIT) -> list[dict]:
 # ------------------------------------------------------------------ codex
 
 
+# A sub-thread rollout (spawned agent, review) carries its parent's thread id
+# in session_meta; the pane's own interactive session never does.
+_SUBTHREAD_RE = re.compile(rb'"parent_thread_id"\s*:\s*"')
+
+
 def _codex_head_cwd(head: bytes) -> str | None:
     """The cwd from a rollout's session_meta header. The meta line embeds the
     agent's full base instructions and easily exceeds any sane head read, so
@@ -354,6 +361,99 @@ def mentioned_files(blob: bytes, cap: int = FILES_CAP) -> list[str]:
     return list(reversed(list(seen)))[:cap]
 
 
+# Codex touches files through shell commands, not structured tool inputs, so
+# references are scraped from the command text itself: apply_patch headers,
+# redirect targets, and file:// URLs are explicit, everything else is "token
+# that ends in an extension". Relative tokens are resolved against the session
+# cwd and against the directories of files being written — markdown links in
+# written content are relative to the linking file, not the cwd. Candidates
+# are heuristic by nature — the caller stats them and keeps only what exists.
+_PATCH_FILE_RE = re.compile(r"\*\*\* (?:Update|Add|Delete) File: ([^\\\"\n]+)")
+_REDIRECT_RE = re.compile(r">>?\s*([\w./~-]+)")
+_FILE_URL_RE = re.compile(r"file://(/[\w./~-]+)")
+_PATH_RUN_RE = re.compile(r"[\w./~-]+")
+_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,8}$")
+
+
+def _resolve(token: str, base: str | None) -> str | None:
+    token = token.strip().rstrip(".")
+    if token.startswith("~/"):
+        token = token[2:]  # backends resolve home-relative paths
+    elif not token.startswith("/"):
+        if not base or token.startswith("~"):
+            return None
+        token = f"{base}/{token}"
+    path = posixpath.normpath(token)
+    if ":" in path or ".." in path.split("/") or path in ("/", "."):
+        return None
+    return path
+
+
+def codex_mentioned_files(blob: bytes, cwd: str | None) -> list[str]:
+    """Path candidates from a codex rollout's tool calls, newest first."""
+    seen: dict[str, None] = {}
+
+    def add(token: str, base: str | None) -> None:
+        path = _resolve(token, base)
+        if path is None:
+            return
+        seen.pop(path, None)  # re-mention moves it to the newest slot
+        seen[path] = None
+
+    def note_base(bases: list[str], token: str) -> None:
+        target = _resolve(token, cwd)
+        if target is not None:
+            d = posixpath.dirname(target) or "."
+            if d not in bases and len(bases) < 4:  # bound the fan-out
+                bases.append(d)
+
+    for rec in _iter_records(blob):
+        if rec.get("type") != "response_item":
+            continue
+        p = rec.get("payload") or {}
+        if p.get("type") not in ("function_call", "custom_tool_call"):
+            continue
+        text = p.get("arguments") or p.get("input") or ""
+        if not isinstance(text, str):
+            continue
+        bases: list[str] = [cwd] if cwd else []
+        for m in _PATCH_FILE_RE.finditer(text):
+            add(m.group(1), cwd)
+            note_base(bases, m.group(1))
+        for m in _REDIRECT_RE.finditer(text):  # heredoc/redirect writes
+            if _EXT_RE.search(m.group(1)):
+                note_base(bases, m.group(1))
+        for m in _FILE_URL_RE.finditer(text):
+            add(m.group(1), None)
+        for m in _PATH_RUN_RE.finditer(text):
+            run = m.group(0).rstrip(".")
+            if not _EXT_RE.search(run):
+                continue
+            prev = text[m.start() - 1] if m.start() else " "
+            if prev in "!:":  # rg's negated globs, URL remainders
+                continue
+            nxt = text[m.end():m.end() + 1]
+            if nxt == "(":  # json.loads(...) — a method call, not a file
+                continue
+            for base in bases or [None]:
+                add(run, base)
+    return list(reversed(list(seen)))
+
+
+async def existing_files(fs, candidates: list[str], cap: int = FILES_CAP) -> list[str]:
+    """The candidates that actually stat on the host, order kept, capped."""
+
+    async def probe(path: str) -> str | None:
+        try:
+            await fs.stat(path)
+            return path
+        except Exception:  # noqa: BLE001 - a candidate that doesn't exist
+            return None
+
+    hits = await asyncio.gather(*(probe(p) for p in candidates[:400]))
+    return [p for p in hits if p][:cap]
+
+
 class TranscriptPeek:
     """Cached tail-parses, keyed by (host, path) and invalidated by stat."""
 
@@ -370,8 +470,10 @@ class TranscriptPeek:
                           session_id: str | None = None) -> str | None:
         """Walk ~/.codex/sessions newest-first for the rollout matching a
         session id (by filename) or a working directory (by the session_meta
-        header on line one). Bounded probing; the hit is cached and
-        re-validated by stat in the caller."""
+        header on line one). A cwd guess wants the pane's interactive thread:
+        most recently written wins, and sub-thread rollouts (spawned agents,
+        reviews — marked by parent_thread_id) never match. Bounded probing;
+        the hit is cached and re-validated by stat in the caller."""
         key = (host, session_id or cwd or "")
         cached = self.codex_cache.get(key)
         fs = self.backend_for(host)
@@ -399,7 +501,8 @@ class TranscriptPeek:
                                  if not e["dir"] and e["name"].endswith(".jsonl")]
                     except Exception:  # noqa: BLE001
                         continue
-                    files.sort(key=lambda e: e["name"], reverse=True)
+                    files.sort(key=lambda e: (e.get("mtime") or 0, e["name"]),
+                               reverse=True)
                     for entry in files:
                         path = f"{dirp}/{entry['name']}"
                         if session_id:
@@ -414,7 +517,8 @@ class TranscriptPeek:
                             head = await fs.read_head(path, 4096)
                         except Exception:  # noqa: BLE001 - unreadable header
                             continue
-                        if _codex_head_cwd(head) == cwd:
+                        if (_codex_head_cwd(head) == cwd
+                                and not _SUBTHREAD_RE.search(head)):
                             self.codex_cache[key] = path
                             return path
         return None
@@ -509,6 +613,16 @@ class TranscriptPeek:
             blob = await fs.read_tail(path, CHAT_TAIL_BYTES)
         except Exception as e:  # noqa: BLE001
             return {"available": False, "reason": f"transcript unreadable: {e}", "path": path}
+        if fmt == "codex":
+            cwd = pane.get("cwd")
+            if not cwd:  # the tail has no session_meta; the head does
+                try:
+                    cwd = _codex_head_cwd(await fs.read_head(path, 4096))
+                except Exception:  # noqa: BLE001 - cwd is best-effort
+                    cwd = None
+            files = await existing_files(fs, codex_mentioned_files(blob, cwd))
+        else:
+            files = mentioned_files(blob)
         payload = {
             "available": True,
             "path": path,
@@ -518,7 +632,7 @@ class TranscriptPeek:
             "size": stamp[1],
             "messages": (parse_codex_messages(blob) if fmt == "codex"
                          else parse_claude_messages(blob)),
-            "files": [] if fmt == "codex" else mentioned_files(blob),
+            "files": files,
         }
         self.chat_cache[key] = (stamp, payload)
         if len(self.chat_cache) > 64:  # chat payloads are chunky; keep few
