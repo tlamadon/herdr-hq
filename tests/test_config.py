@@ -102,6 +102,7 @@ def test_load_config_explicit_json(tmp_path, monkeypatch):
 def test_load_config_default_when_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HERDRHQ_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))  # hide any real ~/.config/herdr-hq
     cfg = load_config()
     assert isinstance(cfg, Config)
     assert list(cfg.hosts) == ["localhost"]
