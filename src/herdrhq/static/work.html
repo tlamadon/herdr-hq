@@ -33,7 +33,7 @@
     <nav class="work-side" aria-label="Projects and machines">
       <div class="work-side-head">Projects</div>
       <div id="projectTree" class="work-tree"></div>
-      <div class="work-side-head">Machines</div>
+      <div class="work-side-head" id="machineHead" hidden>Machines</div>
       <div id="machineTree" class="work-tree"></div>
     </nav>
 
@@ -60,6 +60,7 @@
         <div id="chatMeta" class="chat-meta" hidden></div>
         <div id="chatScroll" class="chat-scroll"><div id="chatList" class="chat-list"></div></div>
         <form id="chatForm" class="chat-composer">
+          <div id="chatStatus" class="chat-status" aria-live="polite"></div>
           <textarea id="chatText" rows="2" placeholder="Send a prompt to this agent…"
                     aria-label="Message to the agent"></textarea>
           <button type="submit" class="btn btn-primary" id="chatSend">Send</button>

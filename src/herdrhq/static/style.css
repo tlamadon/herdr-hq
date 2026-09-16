@@ -215,6 +215,12 @@ main {
 .dot[data-status="done"] { background: var(--good); }
 .dot[data-status="idle"] { background: var(--muted); }
 .dot[data-status="unknown"] { background: var(--baseline); }
+.dot[data-status="sent"] { background: var(--accent); }
+.shell-mark {
+  flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px; font-weight: 700; line-height: 1; color: var(--muted);
+}
+.work-tab.is-on .shell-mark, .tree-row.is-selected .shell-mark { color: rgba(255, 255, 255, 0.9); }
 .dot.is-live { animation: pulse 1.6s ease-in-out infinite; }
 
 /* ---------------------------------------------------------------- hosts */
@@ -369,6 +375,7 @@ main {
 .status-pill[data-status="working"] { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--border)); }
 .status-pill[data-status="blocked"] { color: var(--warning); border-color: color-mix(in oklab, var(--warning) 45%, var(--border)); }
 .status-pill[data-status="done"] { color: var(--good); border-color: color-mix(in oklab, var(--good) 40%, var(--border)); }
+.status-pill[data-status="sent"] { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--border)); }
 
 .agent-kind { font-size: 11px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
 
@@ -979,11 +986,21 @@ html:has(.work-body) { overscroll-behavior: none; overflow: hidden; }
 }
 .tree-host { flex: none; font-size: 10.5px; color: var(--muted); }
 .tree-extra { flex: none; font-size: 10.5px; color: var(--muted); }
-.tree-dots { display: inline-flex; gap: 4px; align-items: center; flex: none; margin-left: 4px; }
-.tree-line .tree-dots { margin-left: auto; }
-.tree-dot-group { display: inline-flex; gap: 2px; align-items: center; }
-.tree-dot-n { font-size: 10px; color: var(--muted); }
+.tree-pills { display: inline-flex; gap: 3px; align-items: center; flex: none; margin-left: auto; padding-left: 4px; }
+.tree-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px 1px 5px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.tree-pill .dot { width: 7px; height: 7px; }
+.tree-pill-n {
+  font-size: 10px; font-weight: 600; line-height: 1.4;
+  color: var(--ink-2); font-variant-numeric: tabular-nums;
+}
 .tree-row.is-selected .dot { box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8); }
+.tree-row.is-selected .tree-pill { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.5); }
+.tree-row.is-selected .tree-pill .dot { box-shadow: none; }
+.tree-row.is-selected .tree-pill-n { color: #fff; }
 .empty-hint { color: var(--muted); font-size: 12.5px; padding: 8px 10px; }
 
 /* width:100% forces this grid item to fill its track — without it the flex
@@ -1179,6 +1196,8 @@ a.chat-file:hover, a.chat-file:hover code { color: var(--accent); text-decoratio
   display: flex; gap: 8px; padding: 10px 24px; border-top: 1px solid var(--grid);
   flex: none; width: 100%; box-sizing: border-box;
 }
+.chat-status { align-self: center; flex: none; white-space: nowrap; }
+.chat-status:empty { display: none; }
 .chat-composer textarea {
   flex: 1; resize: none; font: inherit; font-size: 13px; color: var(--ink);
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;

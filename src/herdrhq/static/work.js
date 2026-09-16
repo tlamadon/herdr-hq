@@ -13,6 +13,7 @@ const ui = {
   liveLabel: document.getElementById('liveLabel'),
   themeToggle: document.getElementById('themeToggle'),
   projectTree: document.getElementById('projectTree'),
+  machineHead: document.getElementById('machineHead'),
   machineTree: document.getElementById('machineTree'),
   workCrumb: document.getElementById('workCrumb'),
   paneTabs: document.getElementById('paneTabs'),
@@ -30,6 +31,7 @@ const ui = {
   chatScroll: document.getElementById('chatScroll'),
   chatList: document.getElementById('chatList'),
   chatForm: document.getElementById('chatForm'),
+  chatStatus: document.getElementById('chatStatus'),
   chatText: document.getElementById('chatText'),
   chatSend: document.getElementById('chatSend'),
   chatNote: document.getElementById('chatNote'),
@@ -51,9 +53,10 @@ const state = {
   fleet: null,
   model: null,            // {checkouts, projects, machines}
   sel: { host: null, top: null, pane: null, tab: 'term' },
+  lastPane: new Map(),    // `${host}|${top}` -> pane_id last used there
   allowInput: true,
   filesPath: null,
-  chat: { stamp: null, pinned: true, timer: null, files: [], nodes: null, nodeList: null },
+  chat: { stamp: null, pinned: true, timer: null, files: [], nodes: null, nodeList: null, sent: null },
   proxied: new Map(),     // `${host}|${port}` -> preview URL
   fetchTimer: null,
   renderTimer: null,
@@ -188,14 +191,41 @@ function filesRoot() {
 
 /* -------------------------------------------------------------- sidebar */
 
-function statusDots(panes) {
+/** One dot summarising a whole entry — blocked beats working beats idle —
+    so the eye can jump straight to whatever needs attention. */
+function aggDot(panes) {
+  const agents = panes.filter((p) => p.is_agent);
+  let s = 'idle';
+  if (agents.some((p) => p.status === 'blocked')) s = 'blocked';
+  else if (agents.some((p) => p.status === 'working')) s = 'working';
+  return el('span', {
+    class: `dot${s === 'working' ? ' is-live' : ''}`,
+    'data-status': s,
+    title: STATUS_LABEL[s],
+  });
+}
+
+/** Marker for a plain (non-agent) pane — a prompt glyph, not a dot, so a
+    shell never reads as one more gray agent. */
+const shellMark = () => el('span', { class: 'shell-mark', text: '❯' });
+
+function statusPills(panes) {
   const counts = {};
-  for (const p of panes) if (p.is_agent) counts[p.status] = (counts[p.status] || 0) + 1;
-  return el('span', { class: 'tree-dots' }, STATUS_ORDER.filter((s) => counts[s]).map((s) =>
-    el('span', { class: 'tree-dot-group', title: `${counts[s]} ${STATUS_LABEL[s]}` }, [
-      el('span', { class: `dot${s === 'working' ? ' is-live' : ''}`, 'data-status': s }),
-      counts[s] > 1 ? el('span', { class: 'tree-dot-n', text: String(counts[s]) }) : null,
-    ])));
+  let plain = 0;
+  for (const p of panes) {
+    if (p.is_agent) counts[p.status] = (counts[p.status] || 0) + 1;
+    else plain += 1;
+  }
+  const pill = (mark, n, title) => el('span', { class: 'tree-pill', title }, [
+    mark,
+    el('span', { class: 'tree-pill-n', text: String(n) }),
+  ]);
+  return el('span', { class: 'tree-pills' }, [
+    ...STATUS_ORDER.filter((s) => counts[s]).map((s) =>
+      pill(el('span', { class: `dot${s === 'working' ? ' is-live' : ''}`, 'data-status': s }),
+        counts[s], `${counts[s]} ${STATUS_LABEL[s]} agent${counts[s] === 1 ? '' : 's'}`)),
+    plain ? pill(shellMark(), plain, `${plain} plain pane${plain === 1 ? '' : 's'}`) : null,
+  ]);
 }
 
 function abMarks(g) {
@@ -239,9 +269,10 @@ function checkoutRow(co) {
     onclick: () => select(co.host, co.top, null, null),
   }, [
     el('span', { class: 'tree-line' }, [
+      aggDot(co.panes),
       el('span', { class: 'tree-label', text: co.repo }),
       el('span', { class: 'tree-host', text: `@ ${co.host}` }),
-      statusDots(co.panes),
+      statusPills(co.panes),
     ]),
     el('span', { class: 'tree-sub' }, [
       el('span', { class: 'tree-branch', text: co.git.worktree ? `⌥ ${branch}` : branch }),
@@ -258,10 +289,10 @@ function machineRow(m) {
     type: 'button',
     onclick: () => select(m.host, '', null, null),
   }, [
+    aggDot(m.panes),
     el('span', { class: 'tree-label', text: m.host }),
-    m.down ? el('span', { class: 'tree-extra', text: 'unreachable' })
-      : (m.panes.length ? el('span', { class: 'tree-extra', text: `${m.panes.length}` }) : null),
-    statusDots(m.panes),
+    m.down ? el('span', { class: 'tree-extra', text: 'unreachable' }) : null,
+    statusPills(m.panes),
   ].filter(Boolean));
 }
 
@@ -275,7 +306,11 @@ function renderSidebar() {
     ui.projectTree.replaceChildren(el('div', { class: 'empty-hint', text: 'No agents in any repository.' }));
   }
 
-  const machines = [...state.model.machines.values()];
+  // a machine only earns a row when there is something to say — loose panes,
+  // an unreachable host, or the selection currently living there
+  const machines = [...state.model.machines.values()].filter(
+    (m) => m.down || m.panes.length || (state.sel.host === m.host && !state.sel.top));
+  ui.machineHead.hidden = !machines.length;
   ui.machineTree.replaceChildren(...machines.map(machineRow));
 }
 
@@ -307,11 +342,17 @@ function select(host, top, pane, tab, { push = true } = {}) {
   state.sel.host = host;
   state.sel.top = top;
   const panes = currentPanes();
+  // coming back to a place resumes its last pane, not the first agent
+  if (!pane) {
+    const last = state.lastPane.get(`${host}|${top}`);
+    if (last && panes.some((p) => p.pane_id === last)) pane = last;
+  }
   if (!pane || !panes.some((p) => p.pane_id === pane)) {
     const firstAgent = panes.find((p) => p.is_agent);
     pane = (firstAgent || panes[0])?.pane_id || null;
   }
   state.sel.pane = pane;
+  if (pane) state.lastPane.set(`${host}|${top}`, pane);
   const cur = currentPane();
   if (!tab) tab = state.sel.tab;
   if (tab === 'chat' && !(cur?.is_agent)) tab = 'term';
@@ -355,7 +396,9 @@ function renderHeader() {
       onclick: () => select(state.sel.host, state.sel.top, p.pane_id,
         state.sel.tab === 'files' ? 'term' : null),
     }, [
-      el('span', { class: `dot${p.status === 'working' ? ' is-live' : ''}`, 'data-status': p.is_agent ? p.status : 'unknown' }),
+      p.is_agent
+        ? el('span', { class: `dot${p.status === 'working' ? ' is-live' : ''}`, 'data-status': p.status })
+        : shellMark(),
       el('span', { class: 'work-tab-label', text: label }),
       counts[label] > 1 ? el('span', { class: 'work-tab-id', text: p.pane_id }) : null,
     ].filter(Boolean));
@@ -424,9 +467,10 @@ function showPanel() {
     state.chat.nodeList = null;
     ui.chatMeta.hidden = true;
     ui.chatList.replaceChildren(el('div', { class: 'empty-hint', text: 'loading conversation…' }));
+    renderChatStatus();
     loadChat();
     state.chat.timer = setInterval(() => {
-      if (!document.hidden) loadChat();
+      if (!document.hidden) { loadChat(); renderChatStatus(); }
     }, 4000);
     const canSend = state.allowInput && currentPane()?.is_agent;
     ui.chatText.disabled = !canSend;
@@ -439,6 +483,32 @@ function showPanel() {
 }
 
 /* ----------------------------------------------------------------- chat */
+
+/** Live status pill beside the prompt box, so it's obvious whether the
+    agent is busy, waiting on you, or ready for the next prompt. Right
+    after a send herdr hasn't noticed the agent moving yet; a transient
+    "sent" pill bridges that gap so the prompt never feels lost. */
+function renderChatStatus() {
+  if (ui.chatPanel.hidden) return;
+  const cur = currentPane();
+  const s = cur?.is_agent ? cur.status : null;
+  const sent = state.chat.sent;
+  if (sent && (cur?.key !== sent.pane || s === 'working' || s === 'blocked'
+      || Date.now() - sent.at > 15000)) {
+    state.chat.sent = null;
+  }
+  if (state.chat.sent && s) {
+    ui.chatStatus.replaceChildren(el('span', {
+      class: 'status-pill', 'data-status': 'sent',
+      title: 'prompt delivered — waiting for the agent to pick it up',
+    }, [
+      el('span', { class: 'dot is-live', 'data-status': 'sent' }),
+      el('span', { text: '↑ sent' }),
+    ]));
+    return;
+  }
+  ui.chatStatus.replaceChildren(...(s && s !== 'unknown' ? [statusPill(s)] : []));
+}
 
 async function loadChat() {
   const pane = currentPane();
@@ -566,6 +636,8 @@ ui.chatForm.addEventListener('submit', async (ev) => {
     });
     ui.chatText.value = '';
     state.chat.pinned = true;
+    state.chat.sent = { pane: pane.key, at: Date.now() };
+    renderChatStatus();
     ui.chatNote.textContent = 'sent — the agent sees it as typed input';
     setTimeout(loadChat, 1500);
   } catch (e) {
@@ -855,6 +927,7 @@ async function fetchState() {
   // selection kept: refresh what depends on the model
   renderSidebar();
   renderHeader();
+  renderChatStatus();
   renderCtxPorts();
 }
 
@@ -881,6 +954,7 @@ function connectPush() {
           state.model = buildModel(state.fleet);
           renderSidebar();
           renderHeader();
+          renderChatStatus();
         }, 300);
       }
     } else if (msg.type === 'host') {
