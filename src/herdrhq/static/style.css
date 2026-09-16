@@ -914,7 +914,17 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
 
 /* ------------------------------------------------------------ workspace */
 
-.work-body { padding: 0; display: flex; flex-direction: column; height: 100vh; }
+/* the workspace is an app shell: panels scroll, the page never does. The
+   overflow clip + overscroll none also stop macOS rubber-banding — without
+   them, wheel overshoot in the chat or terminal drags the whole view. */
+.work-body {
+  padding: 0; display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+  overflow: hidden; overscroll-behavior: none;
+}
+html:has(.work-body) { overscroll-behavior: none; overflow: hidden; }
+.work-side, .work-ctx, .chat-scroll, .work-files, .chat-out, .chat-diff,
+.work-term .xterm-viewport { overscroll-behavior: contain; }
 .work-body .topbar { margin: 0; padding: 12px 20px; border-bottom: 1px solid var(--grid); }
 .work-layout {
   flex: 1; min-height: 0;
