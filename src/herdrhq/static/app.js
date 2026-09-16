@@ -991,6 +991,7 @@ async function tick(force = false) {
     const res = await fetch('/api/state', { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     view.latest = await res.json();
+    setBrandVersion(view.latest.version);
     const bad = view.latest.hosts.filter((h) => h.status === 'error').length;
     ui.liveState.dataset.state = bad === view.latest.hosts.length && bad > 0 ? 'error' : 'ok';
     ui.liveLabel.textContent = `updated ${new Date().toLocaleTimeString()}`;

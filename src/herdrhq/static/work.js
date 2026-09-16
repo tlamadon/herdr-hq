@@ -830,6 +830,7 @@ function loadCtx() {
 async function fetchState() {
   try {
     state.fleet = await api('/api/state');
+    setBrandVersion(state.fleet.version);
     ui.liveState.dataset.state = 'ok';
     ui.liveLabel.textContent = `updated ${new Date().toLocaleTimeString()}`;
   } catch (e) {

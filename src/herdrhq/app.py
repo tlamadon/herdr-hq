@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.metadata
 import json
 import logging
 import mimetypes
@@ -69,11 +70,29 @@ from .transcript import TranscriptPeek
 
 log = logging.getLogger("herdrhq.app")
 
+try:
+    VERSION = importlib.metadata.version("herdr-hq")
+except importlib.metadata.PackageNotFoundError:  # running from a bare checkout
+    VERSION = "dev"
+
 STATIC = Path(__file__).parent / "static"
 
 mimetypes.add_type("text/javascript", ".mjs")  # pdf.js modules
 
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+# Without an explicit Cache-Control, browsers cache /static heuristically and
+# keep serving stale JS/CSS across releases until a hard reload. no-cache
+# still uses the etag — unchanged files are a 304, changed ones apply on a
+# plain reload.
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+class RevalidatedStatic(StaticFiles):
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def err(e: object, code: int = 502) -> JSONResponse:
@@ -102,16 +121,16 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
     # ---------------------------------------------------------------- pages
 
     async def index(request: Request) -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+        return FileResponse(STATIC / "index.html", headers=NO_CACHE)
 
     async def work(request: Request) -> FileResponse:
-        return FileResponse(STATIC / "work.html")
+        return FileResponse(STATIC / "work.html", headers=NO_CACHE)
 
     async def browse_redirect(request: Request) -> RedirectResponse:
         return RedirectResponse("/work", status_code=307)
 
     async def view(request: Request) -> FileResponse:
-        return FileResponse(STATIC / "viewer.html")
+        return FileResponse(STATIC / "viewer.html", headers=NO_CACHE)
 
     async def favicon(request: Request) -> FileResponse:
         return FileResponse(STATIC / "favicon.svg")
@@ -142,7 +161,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
     # ------------------------------------------------------------------ api
 
     async def state(request: Request) -> JSONResponse:
-        return JSONResponse(fleet.state())
+        return JSONResponse({**fleet.state(), "version": VERSION})
 
     async def refresh(request: Request) -> JSONResponse:
         fleet.refresh()
@@ -413,7 +432,7 @@ def create_app(cfg: Config, pool: SSHPool | None = None, secret: str | None = No
         Route("/api/forwards", forwards_get, methods=["GET"]),
         Route("/api/forwards", forwards_post, methods=["POST"]),
         Route("/api/forwards/{fid:path}", forwards_delete, methods=["DELETE"]),
-        Mount("/static", StaticFiles(directory=STATIC), name="static"),
+        Mount("/static", RevalidatedStatic(directory=STATIC), name="static"),
     ]
 
     async def _ensure_host(hs) -> None:

@@ -116,6 +116,12 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand h1 { font-size: 16px; letter-spacing: -0.01em; }
+.brand-ver {
+  align-self: flex-end; margin: 0 0 1px -4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px; color: var(--muted);
+}
+.brand-ver:empty { display: none; }
 
 .brand-mark {
   width: 10px; height: 10px; border-radius: 3px;

@@ -75,6 +75,12 @@ function shortPath(path, keep = 3) {
 
 function qs(params) { return new URLSearchParams(params).toString(); }
 
+/** Stamp the served version beside the brand; filled from /api/state. */
+function setBrandVersion(version) {
+  const eln = document.getElementById('brandVer');
+  if (eln && version) eln.textContent = `v${version}`;
+}
+
 async function api(url, opts) {
   const r = await fetch(url, opts);
   let data = null;
