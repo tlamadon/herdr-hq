@@ -60,9 +60,11 @@
         <div id="chatMeta" class="chat-meta" hidden></div>
         <div id="chatScroll" class="chat-scroll"><div id="chatList" class="chat-list"></div></div>
         <form id="chatForm" class="chat-composer">
-          <div id="chatStatus" class="chat-status" aria-live="polite"></div>
-          <textarea id="chatText" rows="2" placeholder="Send a prompt to this agent…"
-                    aria-label="Message to the agent"></textarea>
+          <div class="chat-box">
+            <div id="chatStatus" class="chat-status" aria-live="polite"></div>
+            <textarea id="chatText" rows="2" placeholder="Send a prompt to this agent…"
+                      aria-label="Message to the agent"></textarea>
+          </div>
           <button type="submit" class="btn btn-primary" id="chatSend">Send</button>
         </form>
         <div class="work-note" id="chatNote"></div>
