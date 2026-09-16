@@ -1007,7 +1007,9 @@ html:has(.work-body) { overscroll-behavior: none; overflow: hidden; }
    column shrink-wraps to the terminal's own pixel width (xterm sets a fixed
    width on .xterm), so the mirror stayed pinned at ~80 cols however wide the
    window got, instead of the fit growing to use the whole panel. */
-.work-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; width: 100%; }
+/* padding: 0 undoes the generic `main` page padding — this main is a pinned
+   panel, and its content (bar, terminal, chat) bleeds to the panel edges */
+.work-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; width: 100%; padding: 0; }
 /* one slim bar for the whole center: identity · context · term-ctl · modes */
 .work-bar {
   display: flex; align-items: center; gap: 10px; min-width: 0; flex: none;
