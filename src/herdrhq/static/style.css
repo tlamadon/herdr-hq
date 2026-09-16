@@ -520,6 +520,12 @@ body.is-modal { overflow: hidden; }
   background: var(--term-bg);   /* follows the theme; palettes in termcore.js */
 }
 .term-body .xterm-viewport { background: transparent !important; }
+/* Every terminal here mirrors with scrollback: 0 — herdr owns the history and
+   the wheel is forwarded — so the viewport can never scroll. Hide its
+   scrollbar: with always-on system scrollbars (mouse plugged in) it otherwise
+   paints a permanent dead 15px track down the terminal's right edge. */
+.xterm-viewport { scrollbar-width: none; }
+.xterm-viewport::-webkit-scrollbar { display: none; }
 .term-mount { width: 100%; height: 100%; }
 
 .term-foot {
