@@ -1049,18 +1049,116 @@ td.transcript-cell { max-width: 280px; overflow: hidden; text-overflow: ellipsis
   background: color-mix(in oklab, var(--accent) 5%, var(--surface-1));
   border-radius: 0 10px 10px 0; padding: 8px 14px;
 }
+.chat-msg.is-system { font-size: 11.5px; color: var(--muted); }
 .chat-role { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin-bottom: 2px; }
 .chat-msg .md-body { width: auto; border: 0; background: none; padding: 0; box-shadow: none; font-size: 13.5px; }
-.chat-tools { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 6px; }
-.chat-tool {
-  font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: baseline;
+.chat-img { max-width: min(420px, 100%); border-radius: 10px; border: 1px solid var(--border); }
+
+/* session header */
+.chat-meta {
+  display: flex; gap: 12px; align-items: baseline; flex: none; min-width: 0;
+  padding: 7px 24px; border-bottom: 1px solid var(--grid); font-size: 12px;
+}
+.chat-meta-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-meta-fact {
+  color: var(--muted); flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+}
+.chat-meta-guess { color: var(--serious); font-size: 11px; flex: none; }
+
+/* tool rows — a plain div when there is nothing to expand, a details card
+   when there is (output, a diff, a checklist). Same summary line either way. */
+.chat-tool { font-size: 12px; color: var(--muted); min-width: 0; }
+div.chat-tool { display: flex; align-items: baseline; }
+div.chat-tool::before { content: "▸"; color: var(--baseline); margin-right: 8px; flex: none; }
+details.chat-tool > summary {
+  display: flex; align-items: baseline; cursor: pointer; list-style: none;
+  border-radius: 6px;
+}
+details.chat-tool > summary::-webkit-details-marker { display: none; }
+details.chat-tool > summary::before {
+  content: "▸"; color: var(--baseline); margin-right: 8px; flex: none;
+  transition: transform .12s ease;
+}
+details.chat-tool[open] > summary::before { transform: rotate(90deg); }
+details.chat-tool > summary:hover { color: var(--ink); }
+.chat-tool-line {
+  display: flex; gap: 8px; align-items: baseline; min-width: 0;
   overflow: hidden; white-space: nowrap;
 }
-.chat-tool::before { content: "▸"; color: var(--baseline); }
-.chat-tool-detail {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow: hidden; text-overflow: ellipsis;
+.chat-tool-name { flex: none; font-weight: 550; color: var(--ink-2); }
+.chat-tool-value { overflow: hidden; text-overflow: ellipsis; }
+.chat-tool-value.is-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+.chat-tool-sub { color: var(--muted); overflow: hidden; text-overflow: ellipsis; flex: none; max-width: 40%; }
+.chat-tool-line[data-state="pending"] .chat-tool-sub:last-child { color: var(--serious); }
+/* a failed call flags its marker and name; the command itself stays readable
+   (grep exiting 1 is routine — the whole line in red reads as an alarm) */
+.chat-tool.is-error .chat-tool-name,
+div.chat-tool.is-error::before,
+details.chat-tool.is-error > summary::before { color: var(--critical); }
+.chat-tool-body {
+  margin: 4px 0 6px 4px; padding-left: 12px; border-left: 2px solid var(--grid);
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
 }
+.chat-tool.is-plan > summary .chat-tool-name { color: var(--accent); }
+.chat-tool.is-plan .chat-tool-body { border-left-color: var(--accent); }
+.chat-out {
+  margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  white-space: pre-wrap; word-break: break-word; color: var(--ink-2);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+}
+.chat-out.is-error {
+  color: var(--critical);
+  border-color: color-mix(in oklab, var(--critical) 40%, var(--border));
+}
+
+/* file references — quiet until hovered, then clearly a link */
+a.chat-file, .chat-file code { color: inherit; text-decoration: none; }
+a.chat-file:hover, a.chat-file:hover code { color: var(--accent); text-decoration: underline; }
+.md-body a.chat-file { color: inherit; }
+.md-body a.chat-file:hover { color: var(--accent); }
+
+/* diffs (Edit / Write) */
+.chat-diff {
+  border: 1px solid var(--border); border-radius: 8px; overflow: auto; max-height: 360px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+}
+.chat-diff > div { display: flex; padding: 0 8px; min-width: max-content; }
+.chat-diff .diff-mark { flex: none; width: 14px; color: var(--muted); user-select: none; }
+.chat-diff .diff-text { white-space: pre; }
+.chat-diff .diff-add { background: color-mix(in oklab, var(--series-3) 14%, transparent); }
+.chat-diff .diff-del { background: color-mix(in oklab, var(--critical) 12%, transparent); }
+.chat-diff .diff-fold { color: var(--muted); font-style: italic; padding: 1px 8px; }
+
+/* thinking + compaction + slash commands */
+.chat-thinking { font-size: 12px; color: var(--muted); }
+.chat-thinking > summary { cursor: pointer; font-style: italic; width: fit-content; }
+.chat-thinking > .md-body {
+  margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--grid);
+  color: var(--muted); font-size: 12.5px;
+}
+.chat-compact { font-size: 11.5px; color: var(--muted); }
+.chat-compact > summary { cursor: pointer; width: fit-content; }
+.chat-compact > summary::before { content: "◦ "; color: var(--serious); }
+.chat-compact > .md-body { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
+.chat-cmd { font-size: 12px; color: var(--muted); }
+.chat-cmd code { color: var(--accent); font-size: 11.5px; }
+.chat-cmd > summary { cursor: pointer; width: fit-content; }
+.chat-cmd .chat-out { margin-top: 4px; }
+
+/* checklists (TodoWrite) */
+.chat-todos { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.chat-todos li { padding: 1px 0; color: var(--ink-2); }
+.chat-todos li::before { content: "○ "; color: var(--muted); }
+.chat-todos li.todo-completed { color: var(--muted); }
+.chat-todos li.todo-completed::before { content: "✓ "; color: var(--series-3); }
+.chat-todos li.todo-in_progress::before { content: "▸ "; color: var(--accent); }
+
+/* question cards */
+.chat-questions { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.chat-questions .chat-q { font-weight: 550; }
+.chat-questions ul { margin: 2px 0 0; padding-left: 18px; color: var(--muted); }
 .chat-composer {
   display: flex; gap: 8px; padding: 10px 24px; border-top: 1px solid var(--grid);
   flex: none; width: 100%; box-sizing: border-box;

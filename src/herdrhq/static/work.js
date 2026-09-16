@@ -26,6 +26,7 @@ const ui = {
   workMount: document.getElementById('workMount'),
   workNote: document.getElementById('workNote'),
   chatPanel: document.getElementById('chatPanel'),
+  chatMeta: document.getElementById('chatMeta'),
   chatScroll: document.getElementById('chatScroll'),
   chatList: document.getElementById('chatList'),
   chatForm: document.getElementById('chatForm'),
@@ -52,7 +53,7 @@ const state = {
   sel: { host: null, top: null, pane: null, tab: 'term' },
   allowInput: true,
   filesPath: null,
-  chat: { stamp: null, pinned: true, timer: null, files: [] },
+  chat: { stamp: null, pinned: true, timer: null, files: [], nodes: null, nodeList: null },
   proxied: new Map(),     // `${host}|${port}` -> preview URL
   fetchTimer: null,
   renderTimer: null,
@@ -419,6 +420,9 @@ function showPanel() {
 
   if (tab === 'chat') {
     state.chat.stamp = null;
+    state.chat.nodes = null;
+    state.chat.nodeList = null;
+    ui.chatMeta.hidden = true;
     ui.chatList.replaceChildren(el('div', { class: 'empty-hint', text: 'loading conversation…' }));
     loadChat();
     state.chat.timer = setInterval(() => {
@@ -447,6 +451,7 @@ async function loadChat() {
     return;
   }
   if (!data.available) {
+    ui.chatMeta.hidden = true;
     ui.chatList.replaceChildren(el('div', { class: 'empty-hint', text: data.reason || 'no transcript' }));
     state.chat.files = [];
     renderCtxFiles();
@@ -457,31 +462,87 @@ async function loadChat() {
   const stamp = `${data.mtime}-${data.size}`;
   if (stamp === state.chat.stamp) return;
   state.chat.stamp = stamp;
+  renderChatMeta(data);
   renderChat(data.messages || []);
 }
 
+/** Slim header: what this session is, on which model, how full the window. */
+function renderChatMeta(data) {
+  const s = data.session || {};
+  const bits = [];
+  if (s.title) bits.push(el('span', { class: 'chat-meta-title', text: s.title }));
+  if (s.model) {
+    bits.push(el('span', { class: 'chat-meta-fact', text: s.model.replace(/-\d{8}$/, '') }));
+  }
+  if (s.context) {
+    const used = `${Math.round(s.context / 1000)}k`;
+    bits.push(el('span', {
+      class: 'chat-meta-fact', title: `${s.context.toLocaleString()} tokens in the context window`,
+      text: s.window ? `${used} / ${Math.round(s.window / 1000)}k ctx` : `${used} ctx`,
+    }));
+  }
+  if (data.guessed) {
+    bits.push(el('span', {
+      class: 'chat-meta-guess', text: 'guessed',
+      title: 'herdr reported no exact session; this is the newest transcript for the pane\'s directory',
+    }));
+  }
+  ui.chatMeta.title = data.path || '';
+  ui.chatMeta.replaceChildren(...bits);
+  ui.chatMeta.hidden = !bits.length;
+}
+
+/** Viewer URL for a path the transcript mentions, or null when it can't be
+    pinned to a real file. Absolute (and home-relative) paths go straight to
+    the viewer; bare names like `src/app.py` only link when they match the
+    pane's mentioned files — those are stat-verified server-side, so prose
+    mentions never become dead links. */
+function chatFileHref(path) {
+  if (!path || !state.sel.host) return null;
+  let p = String(path).trim();
+  if (p.startsWith('~/')) p = p.slice(2); // backends resolve home-relative
+  if (!p.startsWith('/')) {
+    const hit = (state.chat.files || []).find((f) => f === p || f.endsWith(`/${p}`));
+    if (!hit) return null;
+    p = hit;
+  }
+  return `/view?${qs({ host: state.sel.host, path: p })}`;
+}
+
+/** Re-render keyed by message content: an unchanged message keeps its node,
+    so its markdown isn't re-parsed and its open/closed details survive the
+    4s poll. The turn still being written rebuilds — aligned from the end so
+    its expanded cards stay expanded while it streams. */
 function renderChat(messages) {
   const atBottom = state.chat.pinned;
-  const nodes = messages.map((m) => {
-    const box = el('div', { class: `chat-msg${m.role === 'user' ? ' is-user' : ''}` });
-    if (m.role === 'user') {
-      box.append(el('div', { class: 'chat-role', text: 'you' }));
+  const prev = state.chat.nodes || new Map();
+  const prevList = state.chat.nodeList || [];
+  const next = new Map();
+  const nodes = messages.map((m, idx) => {
+    const base = JSON.stringify(m);
+    let key = base;
+    for (let n = 2; next.has(key); n += 1) key = `${base}#${n}`;
+    let node = prev.get(key);
+    if (!node) {
+      node = renderChatMessage(m, { fileHref: chatFileHref });
+      const old = prevList[prevList.length - (messages.length - idx)];
+      if (old) copyOpenState(old, node);
     }
-    if (m.tools?.length) {
-      box.append(el('div', { class: 'chat-tools' }, m.tools.slice(0, 12).map((t) =>
-        el('div', { class: 'chat-tool', title: t.detail || '' }, [
-          el('span', { class: 'transcript-tool', text: t.name }),
-          t.detail ? el('span', { class: 'chat-tool-detail', text: t.detail }) : null,
-        ]))));
-      if (m.tools.length > 12) {
-        box.append(el('div', { class: 'chat-tool chat-tool-more', text: `… ${m.tools.length - 12} more tool calls` }));
-      }
-    }
-    if (m.text) box.append(renderMarkdown(m.text));
-    return box;
+    next.set(key, node);
+    return node;
   });
+  state.chat.nodes = next;
+  state.chat.nodeList = nodes;
   ui.chatList.replaceChildren(...nodes);
   if (atBottom) ui.chatScroll.scrollTop = ui.chatScroll.scrollHeight;
+}
+
+/** Mirror expanded/collapsed cards from a message's previous render; blocks
+    added since keep their defaults. */
+function copyOpenState(oldNode, newNode) {
+  const from = oldNode.querySelectorAll('details');
+  const to = newNode.querySelectorAll('details');
+  from.forEach((d, i) => { if (to[i]) to[i].open = d.open; });
 }
 
 ui.chatScroll.addEventListener('scroll', () => {

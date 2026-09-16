@@ -28,9 +28,44 @@ if (window.hljs && !window.hljs.getLanguage('latex')) {
   });
 }
 
+/** Math must not pass through marked: it reads \[, \(, \{ as character
+    escapes and strips the backslashes, so KaTeX gets corrupted input (or no
+    delimiters at all — GPT-family agents write \[ … \] / \( … \)). Swap the
+    unambiguous math spans for atomic placeholder tokens before parsing;
+    restoreMath puts the pristine source back into the rendered DOM, where
+    the KaTeX auto-render then finds it. Single-$ spans are left alone: they
+    are ambiguous ($HOME in inline code) and auto-render already skips code
+    tags. Placeholders use private-use characters no real text contains. */
+function shieldMath(text) {
+  const spans = [];
+  const shield = (span) => { spans.push(span); return `${spans.length - 1}`; };
+  const shielded = String(text).split(/(```[\s\S]*?(?:```|$))/).map((seg, i) => {
+    if (i % 2) return seg; // inside a fence
+    return seg
+      .replace(/\\\[([\s\S]+?)\\\]/g, (_, b) => shield(`$$${b}$$`))
+      .replace(/\\\((.+?)\\\)/g, (_, b) => shield(`$${b}$`))
+      .replace(/\$\$([\s\S]+?)\$\$/g, (m) => shield(m));
+  }).join('');
+  return { shielded, spans };
+}
+
+function restoreMath(root, spans) {
+  if (!spans.length) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.includes('')) nodes.push(walker.currentNode);
+  }
+  for (const node of nodes) {
+    node.nodeValue = node.nodeValue.replace(/(\d+)/g, (_, i) => spans[+i] ?? '');
+  }
+}
+
 function renderMarkdown(text, { host, baseDir, version } = {}) {
   const body = el('div', { class: 'md-body' });
-  body.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  const { shielded, spans } = shieldMath(text);
+  body.innerHTML = DOMPurify.sanitize(marked.parse(shielded));
+  restoreMath(body, spans);
 
   if (host && baseDir) rewriteRelativeLinks(body, host, baseDir, version);
   else {

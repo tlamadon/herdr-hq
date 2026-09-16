@@ -121,6 +121,7 @@ def test_parse_messages_conversation():
         {"type": "user", "message": {"content": "fix the bug"},
          "timestamp": "2026-09-04T10:00:00Z"},
         {"type": "assistant", "message": {"model": "claude-fable-5", "content": [
+            {"type": "thinking", "thinking": "off-by-one, probably"},
             {"type": "text", "text": "Looking at it now."},
         ]}, "timestamp": "2026-09-04T10:00:03Z"},
         {"type": "assistant", "message": {"content": [
@@ -128,7 +129,7 @@ def test_parse_messages_conversation():
              "input": {"file_path": "/repo/a.py"}},
         ]}},
         {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "…"},
+            {"type": "tool_result", "tool_use_id": "t1", "content": "1: x=1"},
         ]}},
         {"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Found it: an off-by-one in `range`."},
@@ -137,12 +138,37 @@ def test_parse_messages_conversation():
     )
     msgs = parse_claude_messages(blob)
     assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
-    assert msgs[0]["text"] == "fix the bug"
-    a = msgs[1]  # one merged turn: text + tool + more text
-    assert a["text"] == "Looking at it now.\n\nFound it: an off-by-one in `range`."
-    assert a["tools"] == [{"name": "Read", "detail": "/repo/a.py"}]
+    assert msgs[0]["blocks"] == [{"t": "text", "text": "fix the bug"}]
+    a = msgs[1]  # one merged turn, blocks in transcript order
+    assert [b["t"] for b in a["blocks"]] == ["thinking", "text", "tool", "text"]
+    assert a["blocks"][1]["text"] == "Looking at it now."
+    tool = a["blocks"][2]
+    assert tool["name"] == "Read" and tool["input"] == {"file_path": "/repo/a.py"}
+    assert tool["result"] == "1: x=1" and "pending" not in tool and "error" not in tool
+    assert a["blocks"][3]["text"] == "Found it: an off-by-one in `range`."
     assert a["model"] == "claude-fable-5"
-    assert msgs[2]["text"] == "great, fix it"
+    assert msgs[2]["blocks"][0]["text"] == "great, fix it"
+
+
+def test_parse_messages_error_and_pending_tools():
+    from herdrhq.transcript import parse_claude_messages
+
+    blob = jl(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "false"}},
+        ]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "Exit code 1",
+             "is_error": True},
+        ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "sleep 99"}},
+        ]}},
+    )
+    (a,) = parse_claude_messages(blob)
+    failed, running = a["blocks"]
+    assert failed["error"] and failed["result"] == "Exit code 1"
+    assert running["pending"] and "result" not in running
 
 
 def test_parse_messages_skips_noise_and_limits():
@@ -152,12 +178,83 @@ def test_parse_messages_skips_noise_and_limits():
     noise = [
         {"type": "user", "isSidechain": True, "message": {"content": "sub"}},
         {"type": "user", "isMeta": True, "message": {"content": "meta"}},
-        {"type": "user", "message": {"content": "<local-command-stdout>x</local-command-stdout>"}},
+        {"type": "user", "message": {"content": "<system-reminder>ctx</system-reminder>"}},
+        {"type": "user", "message": {"content": "Caveat: injected preamble"}},
+        {"type": "user", "message": {"content": "[Request interrupted by user]"}},
         {"type": "system", "content": "sys"},
         {"type": "ai-title", "aiTitle": "t"},
     ]
     msgs = parse_claude_messages(jl(*recs, *noise), limit=4)
-    assert [m["text"] for m in msgs] == ["q6", "q7", "q8", "q9"]
+    assert [m["blocks"][0]["text"] for m in msgs] == ["q6", "q7", "q8", "q9"]
+
+
+def test_command_rows_fold_their_stdout():
+    from herdrhq.transcript import parse_claude_messages
+
+    blob = jl(
+        {"type": "user", "message": {"content":
+            "<command-name>/context</command-name>\n<command-args>full</command-args>"}},
+        {"type": "user", "message": {"content":
+            "<local-command-stdout>ctx: 42k</local-command-stdout>"}},
+    )
+    (msg,) = parse_claude_messages(blob)
+    assert msg["blocks"] == [
+        {"t": "command", "name": "/context", "args": "full", "output": "ctx: 42k"},
+    ]
+
+
+def test_superseded_edit_branch_is_pruned():
+    from herdrhq.transcript import parse_claude_messages
+
+    blob = jl(
+        {"type": "user", "uuid": "u1", "parentUuid": "root",
+         "message": {"content": "first ask"}},
+        # abandoned attempt and its reply…
+        {"type": "user", "uuid": "u2", "parentUuid": "u1",
+         "message": {"content": "do it wrong"}},
+        {"type": "assistant", "uuid": "a2", "parentUuid": "u2",
+         "message": {"content": [{"type": "text", "text": "wrong way it is"}]}},
+        # …replaced by an edited prompt sharing the same parent
+        {"type": "user", "uuid": "u3", "parentUuid": "u1",
+         "message": {"content": "do it right"}},
+        {"type": "assistant", "uuid": "a3", "parentUuid": "u3",
+         "message": {"content": [{"type": "text", "text": "right away"}]}},
+    )
+    msgs = parse_claude_messages(blob)
+    texts = [m["blocks"][0]["text"] for m in msgs]
+    assert texts == ["first ask", "do it right", "right away"]
+
+
+def test_compact_summary_is_a_system_row():
+    from herdrhq.transcript import parse_claude_messages
+
+    blob = jl(
+        {"type": "user", "isCompactSummary": True, "isMeta": True,
+         "message": {"content": "Earlier: we fixed the parser."}},
+        {"type": "user", "message": {"content": "continue"}},
+    )
+    msgs = parse_claude_messages(blob)
+    assert msgs[0]["role"] == "system"
+    assert msgs[0]["blocks"][0] == {"t": "compact", "text": "Earlier: we fixed the parser."}
+
+
+def test_claude_session_meta():
+    from herdrhq.transcript import claude_session_meta
+
+    blob = jl(
+        {"type": "ai-title", "aiTitle": "Fixing the build"},
+        {"type": "assistant", "message": {"model": "claude-fable-5", "usage": {
+            "input_tokens": 12, "cache_read_input_tokens": 40000,
+            "cache_creation_input_tokens": 2000, "output_tokens": 90}, "content": []}},
+        # an interrupted turn writes an all-zero usage row — must not win
+        {"type": "assistant", "message": {"usage": {
+            "input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0, "output_tokens": 0}, "content": []}},
+    )
+    meta = claude_session_meta(blob)
+    assert meta["title"] == "Fixing the build"
+    assert meta["model"] == "claude-fable-5"
+    assert meta["context"] == 42012
 
 
 def test_mentioned_files_order_and_dedupe():
@@ -216,7 +313,7 @@ def test_locate_guesses_newest_transcript(tmp_path, monkeypatch):
         assert guessed and path.endswith("new.jsonl") and reason is None and fmt == "claude"
         out = await peek.messages("local", pane)
         assert out["available"] and out["guessed"]
-        assert out["messages"][-1]["text"] == "new"
+        assert out["messages"][-1]["blocks"][0]["text"] == "new"
         # unknown cwd degrades with the reason chained
         missing = {"is_agent": True, "agent": "claude", "cwd": "/nowhere", "agent_session": None}
         path2, reason2, _, _ = await peek.locate("local", missing)
@@ -255,10 +352,88 @@ def test_parse_codex_messages():
 
     msgs = parse_codex_messages(codex_blob())
     assert [m["role"] for m in msgs] == ["user", "assistant"]
-    assert msgs[0]["text"] == "add host uoc-ultra"
+    assert msgs[0]["blocks"] == [{"t": "text", "text": "add host uoc-ultra"}]
     a = msgs[1]
-    assert a["text"] == "Inspecting the layout first.\n\nAdded the host."
-    assert [t["detail"] for t in a["tools"]] == ["find hosts -type f", "nix build"]
+    assert [b["t"] for b in a["blocks"]] == ["text", "tool", "text", "tool"]
+    first, second = a["blocks"][1], a["blocks"][3]
+    assert first["input"] == {"cmd": "find hosts -type f"}
+    assert first["result"] == "ok" and "pending" not in first
+    assert second["input"] == {"cmd": "nix build"} and second["pending"]
+
+
+def test_parse_codex_items_format():
+    """Modern rollouts (cli >= ~0.150) journal conversation as item_completed
+    items; raw tool calls and developer messages must not duplicate them."""
+    from herdrhq.transcript import parse_codex_messages
+
+    def item(payload):
+        return {"timestamp": "2026-09-15T22:09:00Z", "type": "event_msg",
+                "payload": {"type": "item_completed", "item": payload}}
+
+    blob = jl(
+        # injected context that must stay hidden
+        {"type": "response_item", "payload": {"type": "message", "role": "developer",
+         "content": [{"type": "input_text", "text": "<skills_instructions>…"}]}},
+        item({"type": "UserMessage", "content": [{"type": "text", "text": "prove the bound"}]}),
+        item({"type": "Reasoning", "summary_text": [], "raw_content": []}),
+        item({"type": "AgentMessage", "content": [{"type": "Text", "text": "Reading the notes first."}]}),
+        # the raw call for the same run — must be ignored in favour of the item
+        {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c1",
+         "name": "exec", "input": 'text(await tools.exec_command({cmd:"rg bounds"}));'}},
+        item({"type": "CommandExecution",
+              "command": ["/bin/zsh", "-lc", "rg bounds"],
+              "parsed_cmd": [{"type": "unknown", "cmd": "rg bounds"}],
+              "status": "completed", "exit_code": 0,
+              "stdout": "notes.tex:12", "aggregated_output": "notes.tex:12"}),
+        item({"type": "CommandExecution", "command": ["/bin/zsh", "-lc", "false"],
+              "status": "failed", "exit_code": 1, "aggregated_output": "boom"}),
+        item({"type": "FileChange", "changes": {
+            "/repo/new.tex": {"type": "add", "content": "\\documentclass{article}"},
+            "/repo/old.tex": {"type": "update", "unified_diff": "-a\n+b", "move_path": None},
+        }}),
+        item({"type": "AgentMessage", "content": [{"type": "Text", "text": "Done."}]}),
+    )
+    msgs = parse_codex_messages(blob)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[0]["blocks"] == [{"t": "text", "text": "prove the bound"}]
+    blocks = msgs[1]["blocks"]
+    assert [b["t"] for b in blocks] == ["text", "tool", "tool", "tool", "tool", "text"]
+    ok, failed, write, edit = blocks[1], blocks[2], blocks[3], blocks[4]
+    assert ok["name"] == "Bash" and ok["input"]["command"] == "rg bounds"
+    assert ok["result"] == "notes.tex:12" and "error" not in ok
+    assert failed["error"] and failed["result"] == "boom"
+    assert write["name"] == "Write" and write["input"]["file_path"] == "/repo/new.tex"
+    assert edit["name"] == "Edit" and edit["input"]["unified_diff"] == "-a\n+b"
+
+
+def test_codex_meta_model_from_turn_context():
+    from herdrhq.transcript import codex_session_meta
+
+    blob = jl(
+        {"type": "turn_context", "payload": {"model": "gpt-6-astra", "effort": "high"}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"total_tokens": 85039},
+            "model_context_window": 258400}}},
+    )
+    meta = codex_session_meta(blob)
+    assert meta == {"model": "gpt-6-astra", "context": 85039, "window": 258400}
+
+
+def test_codex_output_envelope_and_meta():
+    from herdrhq.transcript import _codex_output, codex_session_meta
+
+    text, err = _codex_output('{"output": "boom", "metadata": {"exit_code": 2}}')
+    assert text == "boom" and err
+    text, err = _codex_output("plain text")
+    assert text == "plain text" and not err
+
+    blob = jl(
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"input_tokens": 900, "output_tokens": 100,
+                                  "total_tokens": 1000},
+            "model_context_window": 272000}}},
+    )
+    assert codex_session_meta(blob) == {"context": 1000, "window": 272000}
 
 
 def test_parse_codex_tail_current_tool():

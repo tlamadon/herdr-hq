@@ -23,7 +23,9 @@ from dataclasses import asdict, dataclass
 log = logging.getLogger("herdrhq.transcript")
 
 TAIL_BYTES = 256 * 1024
-CHAT_TAIL_BYTES = 512 * 1024
+# browser-tool sessions embed screenshots as base64 in the JSONL; a small tail
+# would hold two of those and no conversation. Re-read only on stat change.
+CHAT_TAIL_BYTES = 1024 * 1024
 SNIP = 400  # transcripts hold whole essays; cards need a line
 CHAT_LIMIT = 80  # messages served to the chat view
 FILES_CAP = 30
@@ -171,67 +173,252 @@ def _iter_records(blob: bytes):
             continue
 
 
+# -------------------------------------------------------------- chat blocks
+#
+# The chat view gets the transcript as ordered typed blocks per message —
+# text, thinking, tool calls with their results paired back in — instead of a
+# flattened text+toolnames digest. The client's renderer decides how each
+# block looks; the parser's job is fidelity and bounding the payload.
+
+CHAT_INPUT_STR_CAP = 6000  # per string in a tool input; diffs need old/new whole
+CHAT_RESULT_CAP = 2500
+CHAT_THINKING_CAP = 6000
+
+_INTERNAL_PREFIXES = ("Caveat:", "[Request interrupted")
+_CMD_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.S)
+_CMD_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+_CMD_OUT_RE = re.compile(r"<local-command-stdout>(.*?)</local-command-stdout>", re.S)
+
+
+def _cap(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n… (+{len(text) - limit} more chars)"
+
+
+def _trim_strings(value, limit: int = CHAT_INPUT_STR_CAP):
+    """A tool input with every string capped — structure kept for the client."""
+    if isinstance(value, str):
+        return _cap(value, limit)
+    if isinstance(value, list):
+        return [_trim_strings(v, limit) for v in value[:50]]
+    if isinstance(value, dict):
+        return {k: _trim_strings(v, limit) for k, v in list(value.items())[:40]}
+    return value
+
+
+def _result_text(content) -> str:
+    """The text of a tool_result whose content is a string or a block list."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(b["text"]) for b in content
+                         if isinstance(b, dict) and b.get("type") == "text" and b.get("text"))
+    return "" if content is None else json.dumps(content)[:500]
+
+
+def _image_src(block: dict) -> str | None:
+    src = block.get("source") or {}
+    if src.get("type") == "base64" and isinstance(src.get("data"), str):
+        return f"data:{src.get('media_type') or 'image/png'};base64,{src['data']}"
+    return None
+
+
+def _user_str_block(text: str, out: list[dict]) -> dict | None:
+    """A user record's string content as a block, or None when it is noise.
+
+    Slash-command payloads and their stdout arrive wrapped in tag markup and
+    become slim command rows (stdout folds onto the command it follows);
+    injected context — reminders, caveats, interruption banners, skill
+    bodies — is machinery the user never typed and stays hidden.
+    """
+    m = _CMD_NAME_RE.search(text)
+    if m:
+        args = _CMD_ARGS_RE.search(text)
+        return {"t": "command", "name": m.group(1).strip(),
+                "args": args.group(1).strip() if args else ""}
+    m = _CMD_OUT_RE.search(text)
+    if m:
+        body = m.group(1).strip()
+        for msg in reversed(out[-3:]):  # its command sits a record or two back
+            last = msg["blocks"][-1] if msg.get("blocks") else None
+            if last and last.get("t") == "command" and "output" not in last:
+                if body:
+                    last["output"] = _cap(body, CHAT_RESULT_CAP)
+                return None
+        return {"t": "command", "name": "", "output": _cap(body, CHAT_RESULT_CAP)} if body else None
+    if text.startswith("<") or text.startswith(_INTERNAL_PREFIXES):
+        return None
+    return {"t": "text", "text": text}
+
+
+def _prompt_row(rec: dict) -> bool:
+    """True for a row the user typed, not a tool result or injected note."""
+    if rec.get("type") != "user" or rec.get("isMeta") or rec.get("isCompactSummary"):
+        return False
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, list):
+        return any(isinstance(b, dict) and b.get("type") in ("text", "image") for b in content)
+    return isinstance(content, str) and bool(content)
+
+
+def drop_superseded_branches(records: list[dict]) -> list[dict]:
+    """Without the rows of prompts that were replaced by an edit or rewind.
+
+    Editing a message makes Claude resume from an earlier point and append
+    the replacement, so two prompts end up sharing one parentUuid and a flat
+    read shows both. Only sibling *prompts* mark a fork — tool results parent
+    freely under one assistant turn — and the file is append-only, so the
+    last sibling written is the live one; the others' subtrees are dead.
+    """
+    siblings: dict[str, list[dict]] = {}
+    for rec in records:
+        if isinstance(rec.get("parentUuid"), str) and _prompt_row(rec):
+            siblings.setdefault(rec["parentUuid"], []).append(rec)
+    dead: set[str] = set()
+    for group in siblings.values():
+        for rec in group[:-1]:
+            if isinstance(rec.get("uuid"), str):
+                dead.add(rec["uuid"])
+    if not dead:
+        return records
+    for rec in records:  # append order propagates each root to its subtree
+        if rec.get("parentUuid") in dead and isinstance(rec.get("uuid"), str):
+            dead.add(rec["uuid"])
+    return [r for r in records if r.get("uuid") not in dead]
+
+
 def parse_claude_messages(blob: bytes, limit: int = CHAT_LIMIT) -> list[dict]:
     """The conversation as the chat view shows it, oldest first.
 
-    Sidechains, meta records, tool results and machinery types are skipped;
-    what remains is what the user asked, what the agent said (markdown, left
-    intact for the client to render), and which tools it called in between.
+    Messages are {"role", "ts", "blocks"} with blocks in transcript order.
+    Consecutive assistant records are one logical turn (transcripts write one
+    record per streamed block); tool results are folded onto the tool_use
+    that produced them, so a tool block still `pending` genuinely never got
+    an answer — running if it is the newest, interrupted otherwise.
     """
+    records = drop_superseded_branches(list(_iter_records(blob)))
     out: list[dict] = []
-    for rec in _iter_records(blob):
-        if rec.get("isSidechain") or rec.get("isMeta"):
+    by_id: dict[str, dict] = {}  # tool_use_id -> its tool block
+
+    def assistant_turn(ts):
+        if out and out[-1]["role"] == "assistant":
+            out[-1]["ts"] = ts or out[-1].get("ts")
+            return out[-1]
+        entry = {"role": "assistant", "ts": ts, "blocks": []}
+        out.append(entry)
+        return entry
+
+    for rec in records:
+        if rec.get("isSidechain"):
             continue
         rtype = rec.get("type")
         ts = rec.get("timestamp")
         if rtype == "user":
             content = (rec.get("message") or {}).get("content")
-            text = None
-            if isinstance(content, str):
-                if content and not content.startswith("<"):
-                    text = content
+            if rec.get("isCompactSummary"):
+                text = content if isinstance(content, str) else _result_text(content)
+                out.append({"role": "system", "ts": ts,
+                            "blocks": [{"t": "compact", "text": text}]})
+                continue
+            if rec.get("isMeta"):
+                continue
+            if isinstance(content, str) and content:
+                block = _user_str_block(content, out)
+                if block:
+                    out.append({"role": "user", "ts": ts, "blocks": [block]})
             elif isinstance(content, list):
-                parts = [b.get("text") for b in content
-                         if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
-                if parts:
-                    text = "\n\n".join(parts)
-            if text:
-                out.append({"role": "user", "text": text, "ts": ts})
+                blocks: list[dict] = []
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    btype = b.get("type")
+                    if btype == "tool_result":
+                        tool = by_id.pop(b.get("tool_use_id") or "", None)
+                        if tool is not None:
+                            tool["result"] = _cap(_result_text(b.get("content")), CHAT_RESULT_CAP)
+                            if b.get("is_error"):
+                                tool["error"] = True
+                            tool.pop("pending", None)
+                    elif btype == "text" and b.get("text"):
+                        block = _user_str_block(str(b["text"]), out)
+                        if block:
+                            blocks.append(block)
+                    elif btype == "image":
+                        src = _image_src(b)
+                        if src:
+                            blocks.append({"t": "image", "src": src})
+                if blocks:
+                    out.append({"role": "user", "ts": ts, "blocks": blocks})
         elif rtype == "assistant":
             msg = rec.get("message") or {}
             content = msg.get("content")
             if not isinstance(content, list):
                 continue
-            texts = []
-            tools = []
-            for block in content:
-                if not isinstance(block, dict):
+            fresh: list[dict] = []
+            for b in content:
+                if not isinstance(b, dict):
                     continue
-                if block.get("type") == "text" and block.get("text"):
-                    texts.append(block["text"])
-                elif block.get("type") == "tool_use":
-                    tools.append({
-                        "name": block.get("name") or "tool",
-                        "detail": _tool_detail(block.get("input")),
-                    })
-            if not texts and not tools:
+                btype = b.get("type")
+                if btype == "text" and b.get("text"):
+                    fresh.append({"t": "text", "text": str(b["text"])})
+                elif btype == "thinking" and b.get("thinking"):
+                    fresh.append({"t": "thinking",
+                                  "text": _cap(str(b["thinking"]), CHAT_THINKING_CAP)})
+                elif btype == "tool_use":
+                    tool = {"t": "tool", "name": b.get("name") or "tool",
+                            "input": (_trim_strings(b["input"])
+                                      if isinstance(b.get("input"), dict) else {}),
+                            "pending": True}
+                    if isinstance(b.get("id"), str):
+                        by_id[b["id"]] = tool
+                    fresh.append(tool)
+            if not fresh:
                 continue
-            # transcripts write one record per streamed block, and tool results
-            # sit between them as (skipped) user records — consecutive
-            # assistant records are one logical turn, so merge them
-            if out and out[-1]["role"] == "assistant":
-                entry = out[-1]
-            else:
-                entry = {"role": "assistant", "ts": ts}
-                out.append(entry)
-            if texts:
-                entry["text"] = "\n\n".join(filter(None, [entry.get("text"), *texts]))
-            if tools:
-                entry["tools"] = (entry.get("tools") or []) + tools
+            entry = assistant_turn(ts)
+            for block in fresh:
+                last = entry["blocks"][-1] if entry["blocks"] else None
+                if (block["t"] in ("text", "thinking") and last
+                        and last["t"] == block["t"]):
+                    last["text"] += "\n\n" + block["text"]
+                else:
+                    entry["blocks"].append(block)
             if msg.get("model"):
                 entry["model"] = msg["model"]
-            entry["ts"] = ts or entry.get("ts")
     return out[-limit:]
+
+
+def claude_session_meta(blob: bytes) -> dict:
+    """Title, model and newest context usage for the chat header, newest wins.
+
+    Context is the prompt side of the newest assistant turn's usage —
+    input + cache read + cache creation — i.e. how full the window is.
+    Interrupted turns write all-zero usage rows; those don't count.
+    """
+    meta: dict = {}
+    for rec in reversed(list(_iter_records(blob))):
+        rtype = rec.get("type")
+        if "title" not in meta:
+            if rtype == "ai-title" and rec.get("aiTitle"):
+                meta["title"] = _snip(str(rec["aiTitle"]), 120)
+            elif rtype == "custom-title" and rec.get("customTitle"):
+                meta["title"] = _snip(str(rec["customTitle"]), 120)
+        if rtype == "assistant" and not rec.get("isSidechain"):
+            msg = rec.get("message") or {}
+            if "model" not in meta and msg.get("model"):
+                meta["model"] = msg["model"]
+            usage = msg.get("usage")
+            if "context" not in meta and isinstance(usage, dict):
+                total = 0
+                for key in ("input_tokens", "cache_read_input_tokens",
+                            "cache_creation_input_tokens"):
+                    v = usage.get(key)
+                    total += v if isinstance(v, int) else 0
+                if total:
+                    meta["context"] = total
+        if len(meta) == 3:
+            break
+    return meta
 
 
 # ------------------------------------------------------------------ codex
@@ -273,34 +460,224 @@ def _codex_tool(payload: dict) -> dict:
     }
 
 
+def _codex_output(output) -> tuple[str, bool]:
+    """(text, is_error) from a codex tool output, which wraps shell output in
+    a JSON envelope carrying exit metadata — sometimes doubly serialized."""
+    if isinstance(output, list):  # newer CLIs write a list of text parts
+        output = "\n".join(str(p.get("text")) for p in output
+                           if isinstance(p, dict) and p.get("text"))
+    if isinstance(output, str):
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            return output, False
+        if not isinstance(parsed, dict):
+            return output, False
+        output = parsed
+    if isinstance(output, dict):
+        meta = output.get("metadata") or {}
+        text = output.get("output") or output.get("content") or ""
+        return str(text), bool(meta.get("exit_code"))
+    return "", False
+
+
+def _codex_texts(content) -> str:
+    """Joined text parts from an item's content list, whatever the casing —
+    codex writes `text`, `Text`, `input_text` and `output_text` variants."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n\n".join(str(part.get("text")) for part in content
+                       if isinstance(part, dict) and part.get("text"))
+
+
+def _codex_command(item: dict) -> str:
+    """The human-readable command of a CommandExecution item: the parsed form
+    when codex provides one, else the argv with its `zsh -lc` wrapper cut."""
+    parsed = item.get("parsed_cmd")
+    if isinstance(parsed, list):
+        cmds = [str(p["cmd"]) for p in parsed if isinstance(p, dict) and p.get("cmd")]
+        if cmds:
+            return "; ".join(cmds)
+    argv = item.get("command")
+    if isinstance(argv, list):
+        if len(argv) == 3 and str(argv[1]) in ("-lc", "-c"):
+            return str(argv[2])
+        return " ".join(str(a) for a in argv)
+    return str(argv or "")
+
+
+def _codex_item_message(item: dict, ts) -> dict | None:
+    """One item_completed entry as a chat message — modern codex rollouts
+    (cli >= ~0.150) journal the conversation as typed items, not events.
+
+    Commands and file changes are normalized onto the claude tool names, so
+    the client renders one vocabulary: a shell run is a Bash row, an edit is
+    an Edit/Write diff, whichever agent produced it.
+    """
+    itype = item.get("type")
+    if itype == "UserMessage":
+        text = _codex_texts(item.get("content"))
+        if not text or text.startswith("<"):  # injected context wrappers
+            return None
+        return {"role": "user", "ts": ts, "blocks": [{"t": "text", "text": text}]}
+    if itype == "AgentMessage":
+        text = _codex_texts(item.get("content"))
+        if not text:
+            return None
+        return {"role": "assistant", "ts": ts, "blocks": [{"t": "text", "text": text}]}
+    if itype == "Reasoning":
+        text = _codex_texts(item.get("summary_text") or item.get("raw_content"))
+        if not text:  # server-side reasoning is usually encrypted — nothing to show
+            return None
+        return {"role": "assistant", "ts": ts,
+                "blocks": [{"t": "thinking", "text": _cap(text, CHAT_THINKING_CAP)}]}
+    if itype == "CommandExecution":
+        output = item.get("aggregated_output") or "\n".join(
+            filter(None, [str(item.get("stdout") or ""), str(item.get("stderr") or "")]))
+        tool = {"t": "tool", "name": "Bash",
+                "input": {"command": _cap(_codex_command(item), CHAT_INPUT_STR_CAP)},
+                "result": _cap(str(output), CHAT_RESULT_CAP)}
+        if item.get("status") == "failed" or item.get("exit_code"):
+            tool["error"] = True
+        if item.get("status") == "in_progress":
+            tool["pending"] = True
+        return {"role": "assistant", "ts": ts, "blocks": [tool]}
+    if itype == "FileChange":
+        blocks = []
+        for path, change in (item.get("changes") or {}).items():
+            if not isinstance(change, dict):
+                continue
+            if change.get("type") == "add" and isinstance(change.get("content"), str):
+                blocks.append({"t": "tool", "name": "Write",
+                               "input": {"file_path": path,
+                                         "content": _cap(change["content"], CHAT_INPUT_STR_CAP)},
+                               "result": ""})
+            else:
+                inp: dict = {"file_path": path}
+                if isinstance(change.get("unified_diff"), str):
+                    inp["unified_diff"] = _cap(change["unified_diff"], CHAT_INPUT_STR_CAP)
+                if change.get("move_path"):
+                    inp["move_path"] = str(change["move_path"])
+                blocks.append({"t": "tool", "name": "Edit", "input": inp, "result": ""})
+        if not blocks:
+            return None
+        return {"role": "assistant", "ts": ts, "blocks": blocks}
+    return None
+
+
 def parse_codex_messages(blob: bytes, limit: int = CHAT_LIMIT) -> list[dict]:
-    """Codex CLI rollout files: event_msg user/agent messages are the clean
-    conversation; function calls attach to the running assistant turn."""
+    """Codex CLI rollout files, normalized onto the claude block shape.
+
+    Modern rollouts journal the conversation as `item_completed` items —
+    messages, reasoning, command runs with their output attached, file
+    changes — and everything else (developer messages, raw tool calls) is
+    machinery that would duplicate or bury them. Older rollouts have no
+    items; they get the event/function-call pairing instead.
+    """
+    records = list(_iter_records(blob))
+    items = [(rec.get("timestamp"), (rec.get("payload") or {}).get("item"))
+             for rec in records
+             if rec.get("type") == "event_msg"
+             and (rec.get("payload") or {}).get("type") == "item_completed"]
+
     out: list[dict] = []
 
-    def assistant_turn(ts):
-        if out and out[-1]["role"] == "assistant":
-            return out[-1]
-        entry = {"role": "assistant", "ts": ts}
-        out.append(entry)
-        return entry
+    def fold(msg: dict) -> None:
+        last = out[-1] if out else None
+        if last and last["role"] == msg["role"] == "assistant":
+            blocks = last["blocks"]
+            for block in msg["blocks"]:
+                if (block["t"] in ("text", "thinking") and blocks
+                        and blocks[-1]["t"] == block["t"]):
+                    blocks[-1]["text"] += "\n\n" + block["text"]
+                else:
+                    blocks.append(block)
+            last["ts"] = msg["ts"] or last.get("ts")
+        else:
+            out.append(msg)
 
-    for rec in _iter_records(blob):
+    if items:
+        for ts, item in items:
+            if isinstance(item, dict):
+                msg = _codex_item_message(item, ts)
+                if msg:
+                    fold(msg)
+        return out[-limit:]
+
+    by_call: dict[str, dict] = {}  # call_id -> its tool block
+    for rec in records:
         rtype = rec.get("type")
         p = rec.get("payload") or {}
         ts = rec.get("timestamp")
+        ptype = p.get("type")
         if rtype == "event_msg":
-            ptype = p.get("type")
             if ptype == "user_message" and p.get("message"):
-                out.append({"role": "user", "text": str(p["message"]), "ts": ts})
+                out.append({"role": "user", "ts": ts,
+                            "blocks": [{"t": "text", "text": str(p["message"])}]})
             elif ptype == "agent_message" and p.get("message"):
-                entry = assistant_turn(ts)
-                entry["text"] = "\n\n".join(filter(None, [entry.get("text"), str(p["message"])]))
-                entry["ts"] = ts
-        elif rtype == "response_item" and p.get("type") in ("function_call", "custom_tool_call"):
-            entry = assistant_turn(ts)
-            entry["tools"] = (entry.get("tools") or []) + [_codex_tool(p)]
+                fold({"role": "assistant", "ts": ts,
+                      "blocks": [{"t": "text", "text": str(p["message"])}]})
+            elif ptype == "agent_reasoning" and p.get("text"):
+                fold({"role": "assistant", "ts": ts,
+                      "blocks": [{"t": "thinking",
+                                  "text": _cap(str(p["text"]), CHAT_THINKING_CAP)}]})
+        elif rtype == "response_item":
+            if ptype in ("function_call", "custom_tool_call"):
+                args = p.get("arguments") or p.get("input") or ""
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {"command": args}
+                tool = {"t": "tool", "name": p.get("name") or "tool",
+                        "input": _trim_strings(args) if isinstance(args, dict) else {},
+                        "pending": True}
+                if isinstance(p.get("call_id"), str):
+                    by_call[p["call_id"]] = tool
+                fold({"role": "assistant", "ts": ts, "blocks": [tool]})
+            elif ptype in ("function_call_output", "custom_tool_call_output"):
+                tool = by_call.pop(p.get("call_id") or "", None)
+                if tool is not None:
+                    text, error = _codex_output(p.get("output"))
+                    tool["result"] = _cap(text, CHAT_RESULT_CAP)
+                    if error:
+                        tool["error"] = True
+                    tool.pop("pending", None)
     return out[-limit:]
+
+
+def codex_session_meta(blob: bytes) -> dict:
+    """Model and newest context usage for the chat header — codex reports a
+    running token_count event with the window size alongside, and the model
+    rides on each turn's turn_context."""
+    meta: dict = {}
+    for rec in reversed(list(_iter_records(blob))):
+        rtype = rec.get("type")
+        p = rec.get("payload") or {}
+        if "model" not in meta:
+            if rtype == "turn_context" and p.get("model"):
+                meta["model"] = str(p["model"])
+            elif (rtype == "event_msg" and p.get("type") == "thread_settings_applied"
+                  and (p.get("thread_settings") or {}).get("model")):
+                meta["model"] = str(p["thread_settings"]["model"])
+        if ("context" not in meta and rtype == "event_msg"
+                and p.get("type") == "token_count"):
+            info = p.get("info") or p
+            usage = info.get("last_token_usage") or info.get("total_token_usage") or {}
+            total = usage.get("total_tokens")
+            if not isinstance(total, int):
+                total = sum(v for v in (usage.get("input_tokens"), usage.get("output_tokens"))
+                            if isinstance(v, int))
+            if total:
+                meta["context"] = total
+            window = info.get("model_context_window")
+            if isinstance(window, int) and window:
+                meta["window"] = window
+        if "model" in meta and "context" in meta:
+            break
+    return meta
 
 
 def parse_codex_tail(blob: bytes) -> Summary:
@@ -319,6 +696,25 @@ def parse_codex_tail(blob: bytes) -> Summary:
                 out.last_prompt = _snip(str(p["message"]))
             elif ptype == "agent_message" and out.last_assistant is None and p.get("message"):
                 out.last_assistant = _snip(str(p["message"]))
+            elif ptype == "item_completed":
+                item = p.get("item") or {}
+                itype = item.get("type")
+                if itype == "UserMessage" and out.last_prompt is None:
+                    text = _codex_texts(item.get("content"))
+                    if text and not text.startswith("<"):
+                        out.last_prompt = _snip(text)
+                elif itype == "AgentMessage" and out.last_assistant is None:
+                    text = _codex_texts(item.get("content"))
+                    if text:
+                        out.last_assistant = _snip(text)
+                elif (itype == "CommandExecution" and open_tool is None
+                      and out.last_assistant is None
+                      and item.get("status") == "in_progress"):
+                    open_tool = {"name": "Bash",
+                                 "detail": _snip(_codex_command(item), 120)}
+        elif rtype == "turn_context":
+            if out.model is None and p.get("model"):
+                out.model = str(p["model"])
         elif rtype == "response_item":
             ptype = p.get("type")
             if ptype in ("function_call_output", "custom_tool_call_output"):
@@ -621,8 +1017,10 @@ class TranscriptPeek:
                 except Exception:  # noqa: BLE001 - cwd is best-effort
                     cwd = None
             files = await existing_files(fs, codex_mentioned_files(blob, cwd))
+            session = codex_session_meta(blob)
         else:
             files = mentioned_files(blob)
+            session = claude_session_meta(blob)
         payload = {
             "available": True,
             "path": path,
@@ -630,6 +1028,7 @@ class TranscriptPeek:
             "format": fmt,
             "mtime": stamp[0],
             "size": stamp[1],
+            "session": session,
             "messages": (parse_codex_messages(blob) if fmt == "codex"
                          else parse_claude_messages(blob)),
             "files": files,
