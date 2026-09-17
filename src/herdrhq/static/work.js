@@ -12,6 +12,9 @@ const ui = {
   liveState: document.getElementById('liveState'),
   liveLabel: document.getElementById('liveLabel'),
   themeToggle: document.getElementById('themeToggle'),
+  sideOpen: document.getElementById('sideOpen'),
+  ctxOpen: document.getElementById('ctxOpen'),
+  drawerScrim: document.getElementById('drawerScrim'),
   projectTree: document.getElementById('projectTree'),
   machineHead: document.getElementById('machineHead'),
   machineTree: document.getElementById('machineTree'),
@@ -88,6 +91,36 @@ const mirror = createMirror({
   onNote: (text) => { ui.workNote.textContent = text; },
   getAllowInput: () => state.allowInput && ui.workInput.checked,
 });
+
+/* -------------------------------------------------------------- drawers */
+
+/* On narrow viewports the side and context columns fold into overlay
+   drawers (styles in the media queries); these classes slide them in.
+   Picking anything in the sidebar closes it — the selection is the point. */
+
+const DRAWERS = { side: { btn: ui.sideOpen, cls: 'side-open' }, ctx: { btn: ui.ctxOpen, cls: 'ctx-open' } };
+
+function setDrawer(name, open) {
+  for (const [n, d] of Object.entries(DRAWERS)) {
+    const on = open && n === name;  // at most one drawer at a time
+    document.body.classList.toggle(d.cls, on);
+    d.btn.setAttribute('aria-expanded', String(on));
+  }
+  ui.drawerScrim.hidden = !open;
+}
+const closeDrawers = () => setDrawer(null, false);
+
+ui.sideOpen.addEventListener('click', () =>
+  setDrawer('side', !document.body.classList.contains('side-open')));
+ui.ctxOpen.addEventListener('click', () =>
+  setDrawer('ctx', !document.body.classList.contains('ctx-open')));
+ui.drawerScrim.addEventListener('click', closeDrawers);
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && !ui.drawerScrim.hidden) closeDrawers();
+});
+// growing past a breakpoint restores the real column; drop the drawer state
+matchMedia('(max-width: 720px)').addEventListener('change', (m) => { if (!m.matches) closeDrawers(); });
+matchMedia('(max-width: 1100px)').addEventListener('change', (m) => { if (!m.matches) closeDrawers(); });
 
 /* ------------------------------------------------------------- the model */
 
@@ -266,7 +299,7 @@ function checkoutRow(co) {
     class: `tree-row tree-entry tree-parent${onThis ? ' is-selected' : ''}`,
     type: 'button',
     title: `${co.top} on ${co.host}`,
-    onclick: () => select(co.host, co.top, null, null),
+    onclick: () => { select(co.host, co.top, null, null); closeDrawers(); },
   }, [
     el('span', { class: 'tree-line' }, [
       aggDot(co.panes),
@@ -287,7 +320,7 @@ function machineRow(m) {
   return el('button', {
     class: `tree-row tree-parent${onThis ? ' is-selected' : ''}`,
     type: 'button',
-    onclick: () => select(m.host, '', null, null),
+    onclick: () => { select(m.host, '', null, null); closeDrawers(); },
   }, [
     aggDot(m.panes),
     el('span', { class: 'tree-label', text: m.host }),
@@ -374,7 +407,7 @@ function renderHeader() {
     ? state.model?.checkouts.get(`${state.sel.host}|${state.sel.top}`) : null;
 
   if (!state.sel.host) {
-    ui.paneTabs.replaceChildren(el('span', { class: 'empty-hint', text: 'Pick a project or machine on the left.' }));
+    ui.paneTabs.replaceChildren(el('span', { class: 'empty-hint', text: 'Pick a project or machine.' }));
     ui.workCrumb.replaceChildren();
     ui.workModes.replaceChildren();
     return;

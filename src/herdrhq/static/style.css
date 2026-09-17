@@ -949,8 +949,8 @@ html:has(.work-body) { overscroll-behavior: none; overflow: hidden; }
   flex: 1; min-height: 0;
   display: grid; grid-template-columns: 280px minmax(0, 1fr) 300px;
 }
-@media (max-width: 1100px) { .work-layout { grid-template-columns: 240px minmax(0, 1fr); } .work-ctx { display: none; } }
-@media (max-width: 720px) { .work-layout { grid-template-columns: minmax(0, 1fr); } .work-side { display: none; } }
+@media (max-width: 1100px) { .work-layout { grid-template-columns: 240px minmax(0, 1fr); } }
+@media (max-width: 720px) { .work-layout { grid-template-columns: minmax(0, 1fr); } }
 
 .work-side {
   border-right: 1px solid var(--grid); overflow-y: auto;
@@ -1056,6 +1056,9 @@ html:has(.work-body) { overscroll-behavior: none; overflow: hidden; }
 }
 .term-ctl { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .term-ctl[hidden] { display: none; }
+/* drawer openers — exist only while their column is folded away (media below) */
+.bar-side-open, .bar-ctx-open { display: none; flex: none; }
+.work-bar-break { display: none; }
 .work-modes { display: flex; align-items: center; gap: 8px; flex: none; }
 .work-modes .btn-seg { font-size: 11.5px; padding: 4px 10px; }
 .work-modes .files-btn {
@@ -1253,6 +1256,87 @@ a.chat-file:hover, a.chat-file:hover code { color: var(--accent); text-decoratio
   white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .ctx-hint { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+/* the "nothing here" line only surfaces when every section is hidden —
+   matters in drawer mode, where an all-empty panel would open onto blank */
+.ctx-empty { display: none; color: var(--muted); font-size: 12px; }
+.work-ctx:not(:has(.ctx-section:not([hidden]))) .ctx-empty { display: block; }
+
+/* ------------------------------------------------- workspace on small screens
+   The columns never disappear; when the viewport can't afford one it folds
+   into an overlay drawer (sidebar from the left ≤720px, context from the
+   right ≤1100px) opened from the work-bar. Desktop above 1100px is untouched. */
+
+.drawer-scrim {
+  position: fixed; inset: 0; z-index: 85;
+  background: color-mix(in oklab, #0b0b0b 45%, transparent);
+}
+.drawer-scrim[hidden] { display: none; }
+
+@media (max-width: 1100px) {
+  .bar-ctx-open { display: inline-flex; align-items: center; justify-content: center; }
+  .work-ctx {
+    position: fixed; top: 0; bottom: 0; right: 0; z-index: 90;
+    width: min(85vw, 340px);
+    border-left: 1px solid var(--border);
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+    transform: translateX(105%); transition: transform .22s ease;
+  }
+  body.ctx-open .work-ctx { transform: none; box-shadow: -8px 0 40px rgba(0, 0, 0, .3); }
+}
+
+@media (max-width: 720px) {
+  .bar-side-open { display: inline-flex; align-items: center; justify-content: center; }
+  .work-side {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 90;
+    width: min(85vw, 320px);
+    border-right: 1px solid var(--border);
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+    transform: translateX(-105%); transition: transform .22s ease;
+  }
+  body.side-open .work-side { transform: none; box-shadow: 8px 0 40px rgba(0, 0, 0, .3); }
+
+  /* the bar wraps to two rows: ☰ · tabs · ctx, then modes … term controls;
+     the crumb yields (the drawer and the page title carry the same context) */
+  .work-bar { flex-wrap: wrap; row-gap: 6px; padding: 6px 8px; }
+  .work-bar > * { order: 10; }
+  .bar-side-open { order: 1; }
+  .work-bar .work-tabs { order: 2; flex: 1 1 0; }
+  .bar-ctx-open { order: 3; }
+  .work-bar-break { order: 4; display: block; flex-basis: 100%; height: 0; }
+  .work-bar-ctx { display: none; }
+  .work-bar .work-modes { order: 11; }
+  .work-bar .work-bar-spacer { order: 12; }
+  .work-bar .term-ctl { order: 13; }
+
+  /* tighter panels + a 16px composer font so iOS doesn't zoom the page on focus */
+  .chat-list { padding: 12px 14px 16px; }
+  .chat-meta { padding: 6px 14px; }
+  .chat-composer { padding: 8px 12px calc(14px + env(safe-area-inset-bottom)); }
+  .chat-composer textarea { font-size: 16px; }
+  .filelist .fdate { display: none; }
+
+  /* slimmer topbar: the live dot keeps its colour, the timestamp text goes */
+  .topbar { padding: 8px 12px; gap: 8px; }
+  .work-body .topbar { padding: 8px 12px; }
+  .brand-ver { display: none; }
+  .topnav { margin-left: 4px; }
+  .topbar-meta .live span:not(.live-dot) { display: none; }
+
+  /* dashboard terminal modal goes full screen */
+  .term-overlay { padding: 0; }
+  .term-modal { width: 100%; height: 100%; max-height: none; border: 0; border-radius: 0; }
+}
+
+@media (pointer: coarse) {
+  .tree-row { padding: 8px 10px; }
+  .tree-entry { padding: 8px 10px; }
+  .work-tab { padding: 6px 11px; }
+  .btn-icon { width: 34px; padding: 7px 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-side, .work-ctx { transition: none; }
+}
 
 /* hljs — colors from the palette, both themes */
 .md-body pre code.hljs { background: none; padding: 0; }

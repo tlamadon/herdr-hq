@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Workspace — herdr HQ</title>
   <link rel="stylesheet" href="/static/vendor/xterm.css">
   <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
@@ -30,7 +30,7 @@
   </header>
 
   <div class="work-layout">
-    <nav class="work-side" aria-label="Projects and machines">
+    <nav class="work-side" id="workSide" aria-label="Projects and machines">
       <div class="work-side-head">Projects</div>
       <div id="projectTree" class="work-tree"></div>
       <div class="work-side-head" id="machineHead" hidden>Machines</div>
@@ -39,7 +39,10 @@
 
     <main class="work-main">
       <div class="work-bar">
-        <nav class="work-tabs" id="paneTabs" aria-label="Panes"><span class="empty-hint">Pick a project or machine on the left.</span></nav>
+        <button class="btn btn-icon bar-side-open" id="sideOpen" type="button"
+                aria-label="Projects and machines" aria-controls="workSide" aria-expanded="false">☰</button>
+        <nav class="work-tabs" id="paneTabs" aria-label="Panes"><span class="empty-hint">Pick a project or machine.</span></nav>
+        <span class="work-bar-break" aria-hidden="true"></span>
         <span class="work-bar-ctx" id="workCrumb"></span>
         <span class="work-bar-spacer"></span>
         <span class="term-ctl" id="termCtl">
@@ -49,6 +52,8 @@
           <button class="btn btn-icon" id="workBigger" type="button" aria-label="Larger text">A+</button>
         </span>
         <span class="work-modes" id="workModes"></span>
+        <button class="btn btn-icon bar-ctx-open" id="ctxOpen" type="button"
+                aria-label="Context panel" aria-controls="ctxPanel" aria-expanded="false">◨</button>
       </div>
 
       <section class="work-content" id="termPanel" hidden>
@@ -80,6 +85,7 @@
     </main>
 
     <aside class="work-ctx" id="ctxPanel" aria-label="Context">
+      <div class="ctx-empty">Nothing to show for this pane yet.</div>
       <section class="ctx-section" id="ctxFiles" hidden>
         <div class="ctx-head">Mentioned files</div>
         <ul id="ctxFileList" class="ctx-list"></ul>
@@ -98,6 +104,8 @@
       </section>
     </aside>
   </div>
+
+  <div id="drawerScrim" class="drawer-scrim" hidden></div>
 
   <div id="msg" role="status"></div>
 
